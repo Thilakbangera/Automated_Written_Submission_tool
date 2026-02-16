@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-docx
+pdfplumber
+pdfminer.six
+python-multipart
+pydantic
+streamlit
+requests
+lxml
