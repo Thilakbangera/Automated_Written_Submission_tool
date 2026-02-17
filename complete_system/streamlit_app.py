@@ -791,13 +791,16 @@ with colB:
     """
     <div class="ws-warn">
       <span class="ws-warn-icon">⚠</span>
-      All fields are required. Complete all uploads and enter the office city.<br/><br/>
-      After you press <b>Generate Written Submission</b>, the generated document
-      and download button will appear at the <b>bottom of this page</b>.
+      <div>
+        <b>All fields are required.</b> Complete all uploads and enter the office city.
+        Once you click <b>Generate Written Submission</b>, the generated document
+        and download option will appear at the <b>bottom of this page</b>.
+      </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
+
 
     st.markdown(
     """
