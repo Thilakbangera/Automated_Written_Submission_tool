@@ -33,39 +33,103 @@ def _first_nonempty(*vals: str) -> str:
             return v.strip()
     return ""
 
-
 def _extract_tech_problem(spec_text: str) -> str:
-    """Extract a short 'technical problem' block from specification.
+    """
+    Extract TECHNICAL PROBLEM / BACKGROUND problem statement.
 
-    Must not be empty across cases. Keep concise (no overfilling).
+    FIX:
+    - Do not stop at paragraph markers like [0002] because IPO headings are often
+      immediately followed by [000x]. Stopping there makes the capture empty.
+    - Instead: start at BACKGROUND/TECHNICAL PROBLEM, then collect paragraph blocks
+      until the next major section heading.
     """
     txt = spec_text or ""
-    # Prefer explicit headings
-    for pat in [
-        r"TECHNICAL\s+PROBLEM(.*?)(?=TECHNICAL\s+SOLUTION|SUMMARY|OBJECT|\[\d{4}\])",
-        r"BACKGROUND\s+OF\s+THE\s+INVENTION(.*?)(?=SUMMARY|OBJECT|BRIEF\s+DESCRIPTION|\[\d{4}\])",
-    ]:
-        mm = re.search(pat, txt, re.I | re.S)
-        if mm:
-            block = re.sub(r"\s+", " ", mm.group(1)).strip()
-            return block[:1200]
+    if not txt.strip():
+        return ""
 
-    # Otherwise extract a few sentences containing problem/need/drawback/limitation.
-    flat = re.sub(r"\s+", " ", txt)
-    sents = re.split(r"(?<=[.!?])\s+", flat)
-    picks = []
-    for s in sents:
-        if re.search(r"\b(problem|drawback|need|limitation|challenge|deficien)\w*\b", s, re.I):
-            picks.append(s.strip())
-        if len(picks) >= 3:
-            break
-    return " ".join(picks)[:800]
+    def norm(s: str) -> str:
+        return re.sub(r"\s+", " ", s).strip()
+
+    # Slice from a likely "problem" header
+    m_start = re.search(r"(?is)\b(TECHNICAL\s+PROBLEM|BACKGROUND\s+OF\s+THE\s+INVENTION|BACKGROUND)\b", txt)
+    if not m_start:
+        # fallback: keyword-based sentence pick (your old fallback, but a bit stronger)
+        flat = norm(txt)
+        sents = re.split(r"(?<=[.!?])\s+", flat)
+        picks = []
+        for s in sents:
+            if re.search(r"\b(problem|drawback|need|limitation|challenge|constraint|deficien)\w*\b", s, re.I):
+                picks.append(s.strip())
+            if len(picks) >= 3:
+                break
+        return " ".join(picks)[:800]
+
+    tail = txt[m_start.start():]
+
+    # Stop at next major section heading (NOT at [000x])
+    m_end = re.search(
+        r"(?is)\b("
+        r"SUMMARY\s+OF\s+THE\s+INVENTION|SUMMARY|"
+        r"OBJECTIVE\s+OF\s+THE\s+INVENTION|OBJECT\s+OF\s+INVENTION|OBJECT|"
+        r"BRIEF\s+DESCRIPTION|BRIEF\s+DESCRIPTION\s+OF\s+DRAWINGS?|"
+        r"DETAILED\s+DESCRIPTION"
+        r")\b",
+        tail,
+    )
+    block = tail[: m_end.start()] if m_end else tail
+
+    # Prefer paragraph-numbered content inside the block
+    paras = re.findall(r"\[\d{4}\]\s*.*?(?=\[\d{4}\]|\Z)", block, re.S)
+    if paras:
+        out = " ".join(norm(p) for p in paras[:3])  # keep it concise
+        return out[:1200]
+
+    return norm(block)[:1200]
+
 
 def _extract_tech_solution(spec_text: str) -> str:
-    m = re.search(r"SUMMARY(.*?)(?=BRIEF DESCRIPTION|\[0012\])", spec_text, re.I | re.S)
-    if m:
-        return re.sub(r"\s+", " ", m.group(1)).strip()
-    return ""
+    """
+    Extract TECHNICAL SOLUTION from SUMMARY.
+
+    FIX:
+    - In many IPO specs, "Summary of the invention" is followed by [0012] boilerplate,
+      and the actual solution starts at [0013]+.
+    - So: slice summary section, then take paragraph-numbered content (skip boilerplate if needed).
+    """
+    txt = spec_text or ""
+    if not txt.strip():
+        return ""
+
+    def norm(s: str) -> str:
+        return re.sub(r"\s+", " ", s).strip()
+
+    m_start = re.search(r"(?is)\bSUMMARY\b", txt)
+    if not m_start:
+        return ""
+
+    tail = txt[m_start.start():]
+
+    m_end = re.search(
+        r"(?is)\b("
+        r"BRIEF\s+DESCRIPTION|BRIEF\s+DESCRIPTION\s+OF\s+DRAWINGS?|"
+        r"DETAILED\s+DESCRIPTION"
+        r")\b",
+        tail,
+    )
+    summ = tail[: m_end.start()] if m_end else tail
+
+    # Grab paragraph blocks in the summary
+    paras = re.findall(r"\[\d{4}\]\s*.*?(?=\[\d{4}\]|\Z)", summ, re.S)
+    if paras:
+        # Heuristic: drop the typical boilerplate paragraph if it looks like disclaimer text
+        cleaned = [norm(p) for p in paras]
+        cleaned = [p for p in cleaned if not re.search(r"\b(summary provided herein|not intended to)\b", p, re.I)]
+        out = " ".join(cleaned[:2]) if cleaned else norm(" ".join(paras[:2]))
+        return out[:1200]
+
+    # fallback: plain text after "Summary"
+    return norm(summ)[:1200]
+
 
 def _extract_tech_effect(spec_text: str) -> str:
     """
