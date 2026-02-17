@@ -788,11 +788,17 @@ with colB:
     has_required = all([city, fer, hn, spec, amended, tech_imgs and len(tech_imgs) > 0])
     if not has_required:
         st.markdown(
-            '<div class="ws-warn"><span class="ws-warn-icon">⚠</span>'
-            ' All fields are required. Complete all uploads and enter the office city. After you press <b>Generate Written Submission</b>, the generated document and download button will appear
-        at the <b>bottom of this page</b>. </div>',
-            unsafe_allow_html=True,
-        )
+    """
+    <div class="ws-warn">
+      <span class="ws-warn-icon">⚠</span>
+      All fields are required. Complete all uploads and enter the office city.<br/><br/>
+      After you press <b>Generate Written Submission</b>, the generated document
+      and download button will appear at the <b>bottom of this page</b>.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
     st.markdown(
     """
     <div class="ws-warn" style="margin-top:0.8rem;">
