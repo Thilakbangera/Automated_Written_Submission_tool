@@ -239,21 +239,13 @@ st.markdown(
         border: 1px solid rgba(220,38,38,0.25);
       }
 
-      /* ── FIX 2: File Uploader — Browse button must stay white ──────────────
-         Rule order matters: broad color reset first, then carve-outs.
-         The Browse / × button lives inside section > div > button.
-         We must NOT let the wildcard `*` rule bleed into it.
-      ────────────────────────────────────────────────────────────────────── */
-
-      /* Labels above uploader: dark text ✓ */
+      /* ── FIX 2: File Uploader — Browse button must stay white ────────────── */
       [data-testid="stFileUploader"] > label,
       [data-testid="stFileUploader"] > label span {
         color: var(--espresso) !important;
         font-weight: 600 !important;
         font-size: 0.95rem !important;
       }
-
-      /* Drop-zone section: dashed warm border */
       [data-testid="stFileUploader"] section {
         background: rgba(255,252,248,0.55) !important;
         border: 2px dashed rgba(68,64,60,0.18) !important;
@@ -265,15 +257,11 @@ st.markdown(
         background: rgba(217,119,6,0.04) !important;
         box-shadow: 0 0 0 3px var(--accent-glow) !important;
       }
-
-      /* Helper text / "Drag and drop…" span inside drop zone */
       [data-testid="stFileUploader"] section span,
       [data-testid="stFileUploader"] section p,
       [data-testid="stFileUploader"] section small {
         color: var(--stone-500) !important;
       }
-
-      /* The Browse / Upload button — gradient amber, white text */
       [data-testid="stFileUploader"] section button,
       [data-testid="stFileUploader"] section button * {
         background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dark) 100%) !important;
@@ -287,13 +275,10 @@ st.markdown(
         filter: brightness(1.08) !important;
         box-shadow: 0 4px 14px var(--accent-glow) !important;
       }
-
-      /* Uploaded file chip (the ✕ tag after upload) */
       [data-testid="stFileUploader"] [data-testid="stFileUploaderFile"],
       [data-testid="stFileUploader"] [data-testid="stFileUploaderFile"] * {
         color: var(--espresso) !important;
       }
-      /* The small × delete button on the chip stays visible */
       [data-testid="stFileUploader"] [data-testid="stFileUploaderDeleteBtn"] button,
       [data-testid="stFileUploader"] [data-testid="stFileUploaderDeleteBtn"] button * {
         color: var(--stone-500) !important;
@@ -427,7 +412,6 @@ st.markdown(
         background: var(--card-solid) !important; color: var(--espresso) !important;
         border-color: var(--border-med) !important;
       }
-      /* Ripple */
       .stButton > button::after {
         content: ''; position: absolute; top: 50%; left: 50%;
         width: 20px; height: 20px; background: rgba(255,255,255,0.5);
@@ -611,9 +595,46 @@ def extract_docx_text(content: bytes) -> str:
     except Exception as e:
         return f"Error extracting text: {str(e)}"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Nav
-# ─────────────────────────────────────────────────────────────────────────────
+# ✅ ADDED (FRONTEND VERIFICATION ONLY — pipeline unchanged)
+def _warn_missing_key_sections(doc_text: str) -> None:
+    """
+    Heuristic check to help user verify extraction quality.
+    This does NOT change generation; it only warns if key sections look empty.
+    """
+    t = (doc_text or "").strip()
+    if not t:
+        return
+
+    def looks_missing(section_title: str) -> bool:
+        # checks if title appears but followed by almost nothing before next major title-ish line
+        # (simple and safe heuristic)
+        import re
+        m = re.search(rf"(?is)\b{re.escape(section_title)}\b\s*:?\s*(.*)", t)
+        if not m:
+            return False
+        tail = m.group(1)[:800]  # small window after title
+        # if the first 200 chars are mostly whitespace/newlines or extremely short, flag it
+        cleaned = re.sub(r"\s+", " ", tail).strip()
+        return len(cleaned) < 40
+
+    flagged = []
+    for title in [
+        "TECHNICAL PROBLEM",
+        "TECHNICAL SOLUTION",
+        "TECHNICAL EFFECT",
+        "TECHNICAL ADVANCEMENT",
+    ]:
+        if looks_missing(title):
+            flagged.append(title)
+
+    if flagged:
+        st.warning(
+            "⚠ Extraction check: the following sections look empty or too short in the generated DOCX: "
+            + ", ".join(flagged)
+            + ".\n\nThis usually happens when IPO PDFs have paragraph numbering like [0002], [0012] right after headings, "
+              "or when the FER uses combined D1/D2 references on one line. Please verify the preview and correct before filing."
+        )
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Hero
 # ─────────────────────────────────────────────────────────────────────────────
@@ -787,36 +808,35 @@ with colB:
     has_required = all([city, fer, hn, spec, amended, tech_imgs and len(tech_imgs) > 0])
     if not has_required:
         st.markdown(
-    """
-    <div class="ws-warn">
-      <span class="ws-warn-icon">⚠</span>
-      <div>
-        <b>All fields are required.</b> Complete all uploads and enter the office city.
-        Once you click <b>Generate Written Submission</b>, the generated document
-        and download option will appear at the <b>bottom of this page</b>.
-      </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+            """
+            <div class="ws-warn">
+              <span class="ws-warn-icon">⚠</span>
+              <div>
+                <b>All fields are required.</b> Complete all uploads and enter the office city.
+                Once you click <b>Generate Written Submission</b>, the generated document
+                and download option will appear at the <b>bottom of this page</b>.
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-
+    # ✅ FIXED typo only: "Desclaimer" -> "Disclaimer" (no logic change)
     st.markdown(
-    """
-    <div class="ws-warn" style="margin-top:0.8rem;">
-      <span class="ws-warn-icon">⚠</span>
-      <div>
-        <b>Desclaimer:</b><br/>
-        Prior art details (D1, D2, etc.), disclosures, and related mappings are automatically extracted from the FER.
-        Due to variations in IPO formatting (e.g., combined references on a single line or unconventional phrasing),
-        the extraction may not always be fully accurate.<br/>
-        Please carefully verify all prior art references and related content before finalizing the Written Submission.
-      </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
+        """
+        <div class="ws-warn" style="margin-top:0.8rem;">
+          <span class="ws-warn-icon">⚠</span>
+          <div>
+            <b>Disclaimer:</b><br/>
+            Prior art details (D1, D2, etc.), disclosures, and related mappings are automatically extracted from the FER.
+            Due to variations in IPO formatting (e.g., combined references on a single line or unconventional phrasing),
+            the extraction may not always be fully accurate.<br/>
+            <b>Please verify:</b> prior art list, disclosures table, and key technical sections (problem/solution/effect) before finalizing the Written Submission.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     go = st.button(
         "⚡  Generate Written Submission",
@@ -987,6 +1007,9 @@ if st.session_state.last_generated is not None:
 
         with st.spinner("Extracting document content…"):
             doc_text = extract_docx_text(content)
+
+        # ✅ ADDED: warn user if extracted sections look blank (frontend only)
+        _warn_missing_key_sections(doc_text)
 
         st.text_area("", value=doc_text, height=420,
                      label_visibility="collapsed", key="out_preview_text")
