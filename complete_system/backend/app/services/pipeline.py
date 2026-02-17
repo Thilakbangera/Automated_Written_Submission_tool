@@ -33,6 +33,7 @@ def _first_nonempty(*vals: str) -> str:
             return v.strip()
     return ""
 
+
 def _extract_tech_problem(spec_text: str) -> str:
     """
     Extract TECHNICAL PROBLEM / BACKGROUND problem statement.
