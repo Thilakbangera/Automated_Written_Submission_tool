@@ -623,8 +623,7 @@ st.markdown(
         <div class="ws-hero-tagline">Patent Office Document Generator</div>
         <h1>Written Submission Generator</h1>
         <div class="ws-hero-subtitle">
-            Transform your patent documents into professional written submissions
-            with precision and elegance. Upload your files and generate
+            Transform your patent documents into professional written submissions Upload your files and generate
             publication-ready documents in seconds.
         </div>
         <div class="ws-badges">
