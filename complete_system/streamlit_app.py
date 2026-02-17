@@ -792,6 +792,22 @@ with colB:
             ' All fields are required. Complete all uploads and enter the office city.</div>',
             unsafe_allow_html=True,
         )
+    st.markdown(
+    """
+    <div class="ws-warn" style="margin-top:0.8rem;">
+      <span class="ws-warn-icon">⚠</span>
+      <div>
+        <b>Important Notice:</b><br/>
+        Prior art details (D1, D2, etc.), disclosures, and related mappings are automatically extracted from the FER.
+        Due to variations in IPO formatting (e.g., combined references on a single line or unconventional phrasing),
+        the extraction may not always be fully accurate.<br/>
+        Please carefully verify all prior art references and related content before finalizing the Written Submission.
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 
     go = st.button(
         "⚡  Generate Written Submission",
