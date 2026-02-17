@@ -807,7 +807,7 @@ with colB:
     <div class="ws-warn" style="margin-top:0.8rem;">
       <span class="ws-warn-icon">⚠</span>
       <div>
-        <b>Important Notice:</b><br/>
+        <b>Desclaimer:</b><br/>
         Prior art details (D1, D2, etc.), disclosures, and related mappings are automatically extracted from the FER.
         Due to variations in IPO formatting (e.g., combined references on a single line or unconventional phrasing),
         the extraction may not always be fully accurate.<br/>
