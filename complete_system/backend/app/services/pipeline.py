@@ -444,6 +444,38 @@ def _clean_prior_arts_list_text(prior_arts_text: str) -> str:
         else:
             out.append(f"{dx}: {doc_part}")
     return "\n".join(out) if out else (prior_arts_text or "")
+# NEW FUNCTION: Extract & build the Formal Objections / Clarity block
+# from the Hearing Notice, for copy-paste into WS under "Reply to Objection"
+# ──────────────────────────────────────────────────────────────────────────────
+def _extract_formal_objections_from_hn(hn_text: str) -> str:
+    """
+    Extract the Clarity/Conciseness + Formal Requirements block from the Hearing Notice.
+    If not found, returns empty string (leave blank in WS).
+    """
+    txt = (hn_text or "").strip()
+
+    patterns = [
+        r"(Objections?\s*[–\-:]\s*Clarity.*?(?:Latest\s+and\s+updated\s+form\s*3.*?submitted\.?))",
+        r"(Clarity\s+and\s+Conciseness.*?(?:Latest\s+and\s+updated\s+form\s*3.*?submitted\.?))",
+        r"(Formal\s+Requirement.*?(?:Latest\s+and\s+updated\s+form\s*3.*?submitted\.?))",
+    ]
+
+    for pat in patterns:
+        m = re.search(pat, txt, re.I | re.S)
+        if m:
+            extracted = re.sub(r"\n{3,}", "\n\n", m.group(1)).strip()
+            if len(extracted) > 80:
+                return extracted
+
+    return ""  # Not found — leave blank in WS
+
+
+def _build_formal_objections_reply(hn_text: str) -> str:
+    """
+    Returns the extracted formal objections block from HN for copy-paste into WS.
+    Returns empty string if not found in HN.
+    """
+    return _extract_formal_objections_from_hn(hn_text)
 
 
 def generate_written_submission(
@@ -465,6 +497,11 @@ def generate_written_submission(
     """
     fer_meta = parse_case_meta_from_fer_or_hn(fer_path)
     hn_meta = parse_case_meta_from_fer_or_hn(hn_path)
+    hn_text = read_pdf_text(hn_path)
+    fer_text = read_pdf_text(fer_path)
+
+    formal_objections_reply = _build_formal_objections_reply(hn_text) or ""
+
 
     spec_text = read_pdf_text(specification_path)
 
@@ -571,7 +608,8 @@ def generate_written_submission(
     tech_problem = _extract_tech_problem(spec_text) or ""
     tech_solution = _extract_tech_solution(spec_text) or ""
     tech_effect = _extract_tech_effect(spec_text) or ""
-    reply_3k = _extract_reply_3k(read_pdf_text(hn_path) + "\n" + read_pdf_text(fer_path)) or ""
+    reply_3k = _extract_reply_3k(hn_text + "\n" + fer_text) or ""
+
 
     # Claims range and extra claims block
     claim_nos = sorted([n for n in claims.keys() if n >= 1])
@@ -634,6 +672,8 @@ def generate_written_submission(
         "{{TECH_PROBLEM}}": tech_problem,
         "{{TECH_SOLUTION}}": tech_solution,
         "{{TECH_EFFECT}}": tech_effect,
+        "{{FORMAL_OBJECTIONS_REPLY}}": formal_objections_reply,
+
     }
 
     # Helper metadata for template post-processing
