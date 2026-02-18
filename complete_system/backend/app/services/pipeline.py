@@ -449,31 +449,68 @@ def _clean_prior_arts_list_text(prior_arts_text: str) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 def _extract_formal_objections_from_hn(hn_text: str) -> str:
     """
-    Extract the Clarity/Conciseness + Formal Requirements block from the Hearing Notice.
-    If not found, returns empty string (leave blank in WS).
+    Extract Clarity/Conciseness + Formal Requirements block from Hearing Notice.
+   
+    Handles all combinations:
+    - Both "Clarity and Conciseness" + "Formal Requirement(s)" present
+    - Only "Formal Requirement(s)" present
+    - Only "Clarity and Conciseness" present
+    - Neither present → returns ""
+   
+    Strategy: find each section heading and extract until the NEXT known
+    heading appears (so we never bleed into Invention/Non-Patentability etc.)
     """
     txt = (hn_text or "").strip()
+    if not txt:
+        return ""
 
-    patterns = [
-        r"(Objections?\s*[–\-:]\s*Clarity.*?(?:Latest\s+and\s+updated\s+form\s*3.*?submitted\.?))",
-        r"(Clarity\s+and\s+Conciseness.*?(?:Latest\s+and\s+updated\s+form\s*3.*?submitted\.?))",
-        r"(Formal\s+Requirement.*?(?:Latest\s+and\s+updated\s+form\s*3.*?submitted\.?))",
+    # All known section headings that act as "stop" boundaries
+    STOP_HEADS = [
+        r"Invention\s+u/s",
+        r"Non[-\s]?Patentability\s+u/s",
+        r"Other\s+Requirement",
+        r"Prior\s+Art",
+        r"Novelty",
+        r"Inventive\s+Step",
+        r"Section\s+3",
+    ]
+    stop_pattern = r"(?=" + "|".join(STOP_HEADS) + r")"
+
+    # Target headings we want to capture
+    TARGET_HEADS = [
+        r"Clarity\s+and\s+Conciseness",
+        r"Formal\s+Requirement\s*\(s\)",
     ]
 
-    for pat in patterns:
-        m = re.search(pat, txt, re.I | re.S)
-        if m:
-            extracted = re.sub(r"\n{3,}", "\n\n", m.group(1)).strip()
-            if len(extracted) > 80:
-                return extracted
+    def extract_section(heading_pattern: str) -> str:
+        """Extract from heading until next stop heading."""
+        m = re.search(heading_pattern, txt, re.I)
+        if not m:
+            return ""
+        start = m.start()
+        # Find nearest stop after start
+        stop_m = re.search(stop_pattern, txt[start + len(m.group()):], re.I | re.S)
+        if stop_m:
+            end = start + len(m.group()) + stop_m.start()
+        else:
+            # No stop found — cap at 2000 chars to avoid runaway
+            end = start + 2000
+        block = txt[start:end].strip()
+        return re.sub(r"\n{3,}", "\n\n", block) if len(block) > 40 else ""
 
-    return ""  # Not found — leave blank in WS
+    parts = []
+    for head in TARGET_HEADS:
+        section = extract_section(head)
+        if section:
+            parts.append(section)
+
+    return "\n\n".join(parts)
 
 
 def _build_formal_objections_reply(hn_text: str) -> str:
     """
-    Returns the extracted formal objections block from HN for copy-paste into WS.
-    Returns empty string if not found in HN.
+    Returns extracted Clarity/Conciseness + Formal Requirements block from HN.
+    Returns "" if neither section is found.
     """
     return _extract_formal_objections_from_hn(hn_text)
 
