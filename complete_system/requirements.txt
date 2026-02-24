@@ -1,0 +1,9 @@
+streamlit
+requests
+python-docx
+fastapi
+uvicorn
+python-multipart
+pdfplumber
+pypdf
+pillow
