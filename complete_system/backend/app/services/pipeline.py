@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from .extract import (
+    extract_prior_art_abstract_from_pdf,
     extract_figure_descriptions_from_spec,
     extract_technical_advancement_from_spec,
     parse_amended_claims,
@@ -116,9 +117,37 @@ def _strip_line_number_artifacts(text: str) -> str:
             num = int(m.group(1))
         except Exception:
             return m.group(0)
-        if 1 <= num <= 400 and num % 5 == 0:
-            return " "
-        return m.group(0)
+        if not (1 <= num <= 400 and num % 5 == 0):
+            return m.group(0)
+
+        # Preserve likely quantitative values (e.g., "120 ms", "15 %", "from 80 to 120").
+        s = m.string
+        left = s[max(0, m.start() - 24) : m.start()].lower()
+        right = s[m.end() : m.end() + 24].lower()
+
+        prev_word_m = re.search(r"([a-z]+)\s*$", left)
+        next_word_m = re.match(r"\s*([a-z]+)", right)
+        prev_word = prev_word_m.group(1) if prev_word_m else ""
+        next_word = next_word_m.group(1) if next_word_m else ""
+
+        quant_prev_words = {
+            "from", "to", "by", "than", "between", "over", "under", "around", "about",
+            "approximately", "approx", "minimum", "maximum", "least", "most",
+        }
+        quant_next_words = {
+            "ms", "msec", "millisecond", "milliseconds", "s", "sec", "second", "seconds",
+            "min", "mins", "minute", "minutes", "hour", "hours", "hr", "hrs",
+            "hz", "khz", "mhz", "ghz", "kb", "mb", "gb", "tb", "byte", "bytes", "bit", "bits",
+            "w", "mw", "kw", "v", "mv", "a", "ma", "db", "dpi", "fps", "percent",
+            "times", "x",
+        }
+        if prev_word in quant_prev_words or next_word in quant_next_words:
+            return m.group(0)
+        if re.match(r"\s*%", right):
+            return m.group(0)
+
+        # Treat remaining inline 5-step markers as likely line-number artifacts.
+        return " "
 
     t = re.sub(r"(?<=[A-Za-z\)])\s+(\d{1,3})\s+(?=[A-Za-z\(\[])", repl, t)
     t = re.sub(r"[ \t]{2,}", " ", t)
@@ -289,55 +318,82 @@ def _extract_tech_solution(spec_text: str) -> str:
     return _format_spec_block_for_ws(block)
 
 
-def _extract_tech_effect(spec_text: str) -> str:
-    """Extract technical effect as complete section/paragraph blocks from spec text."""
-    txt = (spec_text or "").strip()
-    if not txt:
-        return ""
+def _split_ws_paragraphs(text: str) -> List[str]:
+    return [p.strip() for p in re.split(r"\n{2,}", text or "") if p and p.strip()]
 
-    explicit = _extract_spec_section_block(
-        txt,
+
+_TECH_EFFECT_KW_RE = re.compile(
+    r"\b("
+    r"reduce|reduces|reduced|reduction|decrease|decreases|decreased|lower|lowers|lowered|minimi\w*|save|saves|saved|"
+    r"faster|fast|speed|speeds|latency|delay|time|cost|power|memory|bandwidth|overhead|complexity|error|errors|noise|loss|"
+    r"improv\w*|enhanc\w*|efficient|efficiency|accurac\w*|reliab\w*|robust\w*|secure|security|stability|throughput|performance|"
+    r"thereby|thus|hence|results?\s+in|leads?\s+to|enables?|facilitates?|achieves?"
+    r")\b",
+    re.I,
+)
+
+
+_TECH_QUANT_RE = re.compile(
+    r"("
+    r"\b\d+(?:\.\d+)?\s*%|"
+    r"\b\d+(?:\.\d+)?\s*(?:ms|msec|millisecond(?:s)?|s|sec|second(?:s)?|minute(?:s)?|min|hr|hour(?:s)?)\b|"
+    r"\b\d+(?:\.\d+)?\s*(?:hz|khz|mhz|ghz)\b|"
+    r"\b\d+(?:\.\d+)?\s*(?:kb|mb|gb|tb|byte(?:s)?|bit(?:s)?)\b|"
+    r"\b\d+(?:\.\d+)?\s*(?:w|mw|kw|v|mv|a|ma|db|dpi|fps)\b|"
+    r"\b\d+(?:\.\d+)?\s*(?:x|times)\b|"
+    r"\b(?:at\s+least|at\s+most|less\s+than|greater\s+than|more\s+than|no\s+more\s+than|not\s+more\s+than)\s+\d+(?:\.\d+)?\b|"
+    r"\b\d+(?:\.\d+)?\s*(?:to|-|–|—)\s*\d+(?:\.\d+)?\b"
+    r")",
+    re.I,
+)
+
+
+def _is_quantitative_effect_para(paragraph: str) -> bool:
+    p = paragraph or ""
+    return bool(_TECH_QUANT_RE.search(p) and _TECH_EFFECT_KW_RE.search(p))
+
+
+def _is_quantitative_para(paragraph: str) -> bool:
+    return bool(_TECH_QUANT_RE.search(paragraph or ""))
+
+
+def _extract_tech_effect(spec_text: str) -> str:
+    """Extract technical effect strictly from DETAILED DESCRIPTION OF INVENTION."""
+    block = _extract_spec_section_block(
+        spec_text,
         start_headings=[
-            r"TECHNICAL\s+EFFECTS?",
-            r"TECHNICAL\s+ADVANTAGES?",
-            r"ADVANTAGES?\s+OF\s+THE\s+INVENTION",
-            r"TECHNICAL\s+CONTRIBUTION",
-            r"EFFECTS?\s+OF\s+THE\s+INVENTION",
+            r"DETAILED\s+DESCRIPTION\s+OF\s+THE\s+INVENTION",
+            r"DETAILED\s+DESCRIPTION\s+OF\s+INVENTION",
+            r"DETAILED\s+DESCRIPTION",
+            r"DESCRIPTION\s+OF\s+THE\s+INVENTION",
         ],
         end_headings=[
-            r"BRIEF\s+DESCRIPTION(?:\s+OF\s+DRAWINGS?)?",
-            r"DETAILED\s+DESCRIPTION(?:\s+OF\s+THE\s+INVENTION|\s+OF\s+INVENTION)?",
             r"CLAIMS?",
+            r"ABSTRACT",
+            r"WE\s+CLAIM",
+            r"WHAT\s+IS\s+CLAIMED",
         ],
     )
-    explicit_fmt = _format_spec_block_for_ws(explicit)
-    if explicit_fmt:
-        return explicit_fmt
+    formatted = _format_spec_block_for_ws(block)
+    if not formatted:
+        return ""
 
-    effect_kw = re.compile(
-        r"\b("
-        r"reduce|reduces|reduced|decrease|lower|minimi|save|faster|speed|latency|delay|time|cost|power|memory|bandwidth|overhead|complexity|errors?|noise|loss|"
-        r"improv|improves|improved|enhanc|enhances|enhanced|efficient|efficiency|accurac|reliab|robust|secure|security|stability|throughput|performance|"
-        r"thereby|thus|hence|as\s+a\s+result|results?\s+in|leads?\s+to|enables?|facilitates?|achieves?"
-        r")\w*\b",
-        re.I,
-    )
+    paras = _split_ws_paragraphs(formatted)
+    if not paras:
+        return ""
 
-    numbered = re.findall(r"(?ms)(\[\d{4}\].*?)(?=\n\s*\[\d{4}\]|\Z)", txt)
-    picked: List[str] = []
-    for p in numbered:
-        pp = _format_spec_block_for_ws(p)
-        pp = re.sub(r"(?:\s|\n)*(?:CLAIMS?|ABSTRACT|WE CLAIM|WHAT IS CLAIMED IS)\s*$", "", pp, flags=re.I).strip()
-        if not pp:
-            continue
-        if effect_kw.search(pp):
-            picked.append(pp)
-        if len(picked) >= 4:
-            break
-    if picked:
-        return "\n\n".join(picked).strip()
+    # Strict priority: quantitative + effect wording from Detailed Description.
+    picked = [p for p in paras if _is_quantitative_effect_para(p)]
+    if not picked:
+        # Fallback still quantitative (if effect words are sparse).
+        picked = [p for p in paras if _is_quantitative_para(p)]
+    if not picked:
+        # Last fallback: effect-oriented paras from Detailed Description only.
+        picked = [p for p in paras if _TECH_EFFECT_KW_RE.search(p)]
+    if not picked:
+        picked = paras[:2]
 
-    return _format_spec_block_for_ws(_extract_tech_solution(spec_text))
+    return "\n\n".join(picked[:4]).strip()
 
 
 def _extract_reply_3k(hn_text: str) -> str:
@@ -488,9 +544,16 @@ def _normalize_prior_art_entries(prior_arts_entries: Optional[List[Dict[str, Any
         next_num = max(next_num, num + 1)
 
         abstract = _normalize_ws_text(str(raw.get("abstract", "")))
+        prior_art_pdf_path = _normalize_ws_text(str(raw.get("prior_art_pdf_path", "")))
         diagram_image_path = _normalize_ws_text(str(raw.get("diagram_image_path", "")))
-        summary = _normalize_ws_text(str(raw.get("summary", "")))
-        if not (abstract or summary or diagram_image_path):
+        if not abstract and prior_art_pdf_path:
+            try:
+                abstract = _normalize_ws_text(extract_prior_art_abstract_from_pdf(prior_art_pdf_path))
+            except Exception:
+                abstract = ""
+        if not abstract:
+            if prior_art_pdf_path:
+                raise ValueError(f"Unable to extract abstract from prior-art PDF for {raw_label or f'D{num}'}.")
             continue
 
         normalized.append(
@@ -498,7 +561,7 @@ def _normalize_prior_art_entries(prior_arts_entries: Optional[List[Dict[str, Any
                 "label": f"D{num}",
                 "abstract": abstract,
                 "diagram_image_path": diagram_image_path,
-                "summary": summary,
+                "prior_art_pdf_path": prior_art_pdf_path,
             }
         )
 
@@ -509,20 +572,20 @@ def _normalize_prior_art_entries(prior_arts_entries: Optional[List[Dict[str, Any
 def _build_prior_arts_list_from_entries(prior_arts: List[Dict[str, str]]) -> str:
     lines = []
     for pa in prior_arts:
-        desc = pa.get("summary") or pa.get("abstract") or ""
+        desc = pa.get("abstract") or ""
         if desc:
-            lines.append(f"{pa['label']}: {desc}")
+            lines.append(f"{pa['label']} discloses {desc}")
     return "\n".join(lines)
 
 
 def _build_disclosure_from_entries(prior_arts: List[Dict[str, str]]) -> str:
-    """Build table right-column text from provided prior-art summaries."""
+    """Build table right-column text from provided prior-art abstracts."""
     lines = []
     for pa in prior_arts:
-        disclosure = pa.get("summary") or pa.get("abstract") or ""
-        disclosure = disclosure[:900].strip()
+        disclosure = pa.get("abstract") or ""
+        disclosure = disclosure.strip()
         if disclosure:
-            lines.append(f"{pa['label']}: {disclosure}")
+            lines.append(f"{pa['label']} discloses {disclosure}")
     return "\n".join(lines)
 
 
@@ -707,29 +770,26 @@ def _is_hn_noise_line(line: str) -> bool:
 
 
 def _build_prior_art_analysis_sequence(prior_arts: List[Dict[str, str]], claim1_features: str, dx_range: str) -> List[Dict[str, str]]:
-    """Build ordered prior-art sequence: abstract -> diagram -> summary for each Dn, then combined difference."""
+    """Build ordered prior-art sequence: abstract -> optional diagram for each Dn, then combined difference."""
     if not prior_arts:
         return []
 
     sequence: List[Dict[str, str]] = []
     for pa in prior_arts:
-        abstract = _normalize_ws_text(pa.get("abstract", ""))[:1200]
-        summary = _normalize_ws_text(pa.get("summary", ""))[:1200]
+        abstract = _normalize_ws_text(pa.get("abstract", ""))
         diagram_path = _normalize_ws_text(pa.get("diagram_image_path", ""))
 
         if abstract:
-            sequence.append({"kind": "text", "text": abstract})
+            sequence.append({"kind": "text", "text": f"{pa['label']} discloses {abstract}"})
         if diagram_path:
             sequence.append({"kind": "image", "path": diagram_path})
-        if summary:
-            sequence.append({"kind": "text", "text": summary})
 
     claim_basis = _normalize_ws_text(claim1_features)[:1400]
     focus_bits: List[str] = []
     for pa in prior_arts:
-        summary = _normalize_ws_text(pa.get("summary", ""))[:260]
-        if summary:
-            focus_bits.append(f"{pa['label']} focuses on {summary}")
+        abstract = _normalize_ws_text(pa.get("abstract", ""))[:260]
+        if abstract:
+            focus_bits.append(f"{pa['label']} discloses {abstract}")
     prior_focus = "; ".join(focus_bits)
     prior_set = dx_range or ", ".join(pa["label"] for pa in prior_arts)
 

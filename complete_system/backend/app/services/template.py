@@ -201,6 +201,88 @@ def _style_reply_by_drafter_marker(doc: Document) -> None:
                 r.font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
 
 
+def _is_heading_or_side_heading_line(line: str) -> bool:
+    t = re.sub(r"\s+", " ", (line or "")).strip()
+    if not t:
+        return False
+    if len(t) > 180:
+        return False
+
+    # Standalone headings and sub-headings.
+    if re.match(
+        r"^(?:"
+        r"Applicant Submission|REPLY TO OBJECTION|STATEMENT REGARDING SUBSTANCE OF HEARING|"
+        r"Formal Requirement(?:\(s\)|s)?|Clarity and Conciseness|Definitiveness|Definiteness|"
+        r"Invention\s+u/s\b.*|Other Requirement(?:\(s\)|s)?|Prior Art|Novelty|Inventive Step|"
+        r"NON-PATENTABILITY U/S 3|TECHNICAL ADVANCEMENT|TECHNICAL PROBLEM SOLVED BY THE INVENITON|"
+        r"TECHNICAL SOLUTION SOLVED BY THE INVENITON|Technical Effect|Regarding Claim \d+|"
+        r"Yours faithfully|Enclosure"
+        r")\s*:?\s*$",
+        t,
+        re.I,
+    ):
+        return True
+
+    # Pure uppercase heading lines.
+    if t == t.upper() and re.search(r"[A-Z]", t):
+        return True
+
+    return False
+
+
+def _style_headings_and_side_headings(doc: Document) -> None:
+    marker = "[REPLY BY DRAFTER]"
+
+    def _append_line(paragraph: Paragraph, line_text: str, is_heading: bool):
+        last_run = None
+        if marker not in line_text:
+            run = paragraph.add_run(line_text)
+            if is_heading:
+                run.font.bold = True
+                run.font.underline = True
+            return run
+
+        parts = line_text.split(marker)
+        for i, seg in enumerate(parts):
+            if seg:
+                run = paragraph.add_run(seg)
+                if is_heading:
+                    run.font.bold = True
+                    run.font.underline = True
+                last_run = run
+            if i < len(parts) - 1:
+                mrun = paragraph.add_run(marker)
+                mrun.font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
+                last_run = mrun
+        return last_run
+
+    for p in _iter_paragraphs_in_doc(doc):
+        full = p.text or ""
+        if not full.strip():
+            continue
+
+        lines = full.split("\n")
+        has_multiline = len(lines) > 1
+        if has_multiline:
+            if not any(_is_heading_or_side_heading_line(ln) for ln in lines) and marker not in full:
+                continue
+            p.text = ""
+            for i, ln in enumerate(lines):
+                is_heading = _is_heading_or_side_heading_line(ln)
+                last = _append_line(p, ln, is_heading)
+                if i < len(lines) - 1:
+                    if last is None:
+                        last = p.add_run("")
+                    last.add_break()
+            continue
+
+        if _is_heading_or_side_heading_line(full):
+            for run in p.runs:
+                if run.text and run.text.strip():
+                    run.font.bold = True
+                    run.font.underline = True
+
+
 def replace_placeholders(doc_path: str, out_path: str, mapping: Dict[str, str]) -> None:
     doc = Document(doc_path)
 
@@ -222,6 +304,7 @@ def replace_placeholders(doc_path: str, out_path: str, mapping: Dict[str, str]) 
         _replace_runs_in_paragraph(p, mapping)
 
     _style_reply_by_drafter_marker(doc)
+    _style_headings_and_side_headings(doc)
 
     # Remove empty claim sections for claims that don't exist
     max_claim = mapping.get("__CLAIM_MAX__", 10)

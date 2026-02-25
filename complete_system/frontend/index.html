@@ -733,9 +733,13 @@
 
                         <div class="form-group">
                             <label class="form-label">Prior Arts (D1-Dn)</label>
+                            <select id="priorArtInputMode" class="text-input" style="margin-bottom:0.75rem;">
+                                <option value="pdf">From Prior-Art PDF (Auto Abstract Extraction)</option>
+                                <option value="text">Manual Abstract Text</option>
+                            </select>
                             <div id="priorArtsContainer" class="prior-arts-container"></div>
                             <button type="button" id="addPriorArtBtn" class="add-prior-art-btn">+ Add Prior Art</button>
-                            <p class="prior-art-help">Each prior art must include Abstract, Diagram, and Summary.</p>
+                            <p id="priorArtHelp" class="prior-art-help">Upload each prior-art PDF (D1-Dn). Diagram image is optional for each prior art.</p>
                         </div>
                     </div>
 
@@ -865,6 +869,8 @@
         const previewContent = document.getElementById('previewContent');
         const priorArtsContainer = document.getElementById('priorArtsContainer');
         const addPriorArtBtn = document.getElementById('addPriorArtBtn');
+        const priorArtInputMode = document.getElementById('priorArtInputMode');
+        const priorArtHelp = document.getElementById('priorArtHelp');
         
         let generatedBlob = null;
         let generatedFilename = 'Written_Submission.docx';
@@ -878,26 +884,51 @@
             });
         }
 
+        function currentPriorArtMode() {
+            const mode = (priorArtInputMode && priorArtInputMode.value) ? priorArtInputMode.value : 'pdf';
+            return mode === 'text' ? 'text' : 'pdf';
+        }
+
+        function updatePriorArtHelpText() {
+            if (!priorArtHelp) return;
+            if (currentPriorArtMode() === 'pdf') {
+                priorArtHelp.textContent = 'Upload each prior-art PDF (D1-Dn). Diagram image is optional for each prior art.';
+            } else {
+                priorArtHelp.textContent = 'Enter abstract text manually for each prior art. Diagram image is optional.';
+            }
+        }
+
         function addPriorArtCard(initial = {}) {
+            const mode = currentPriorArtMode();
             const card = document.createElement('div');
             card.className = 'prior-art-card';
+            const bodyHtml = mode === 'pdf'
+                ? `
+                    <div class="form-group">
+                        <label class="form-label">Prior Art PDF</label>
+                        <input type="file" class="text-input prior-art-pdf" accept=".pdf">
+                    </div>
+                    <div class="form-group" style="margin-bottom:0;">
+                        <label class="form-label">Diagram Image <span class="optional-badge">Optional</span></label>
+                        <input type="file" class="text-input prior-art-diagram-image" accept=".png,.jpg,.jpeg">
+                    </div>
+                `
+                : `
+                    <div class="form-group">
+                        <label class="form-label">Abstract</label>
+                        <textarea class="text-input text-area-input prior-art-abstract" placeholder="Enter abstract">${initial.abstract || ''}</textarea>
+                    </div>
+                    <div class="form-group" style="margin-bottom:0;">
+                        <label class="form-label">Diagram Image <span class="optional-badge">Optional</span></label>
+                        <input type="file" class="text-input prior-art-diagram-image" accept=".png,.jpg,.jpeg">
+                    </div>
+                `;
             card.innerHTML = `
                 <div class="prior-art-header">
                     <span class="prior-art-title">D1</span>
                     <button type="button" class="prior-art-remove">Remove</button>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">Abstract</label>
-                    <textarea class="text-input text-area-input prior-art-abstract" placeholder="Enter abstract">${initial.abstract || ''}</textarea>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Diagram</label>
-                    <textarea class="text-input text-area-input prior-art-diagram" placeholder="Enter diagram details">${initial.diagram || ''}</textarea>
-                </div>
-                <div class="form-group" style="margin-bottom:0;">
-                    <label class="form-label">Summary</label>
-                    <textarea class="text-input text-area-input prior-art-summary" placeholder="Enter summary">${initial.summary || ''}</textarea>
-                </div>
+                ${bodyHtml}
             `;
 
             const removeBtn = card.querySelector('.prior-art-remove');
@@ -919,23 +950,48 @@
                 return { error: 'Add at least one prior art entry.' };
             }
 
+            const mode = currentPriorArtMode();
             const payload = [];
+            const pdfFiles = [];
+            const diagramFiles = [];
             for (let i = 0; i < cards.length; i += 1) {
                 const card = cards[i];
                 const label = `D${i + 1}`;
-                const abstract = card.querySelector('.prior-art-abstract').value.trim();
-                const diagram = card.querySelector('.prior-art-diagram').value.trim();
-                const summary = card.querySelector('.prior-art-summary').value.trim();
-                if (!abstract || !diagram || !summary) {
-                    return { error: `${label} requires Abstract, Diagram, and Summary.` };
+                const diagramInput = card.querySelector('.prior-art-diagram-image');
+                const diagramFile = (diagramInput && diagramInput.files && diagramInput.files.length > 0) ? diagramInput.files[0] : null;
+
+                if (mode === 'pdf') {
+                    const pdfInput = card.querySelector('.prior-art-pdf');
+                    const pdfFile = (pdfInput && pdfInput.files && pdfInput.files.length > 0) ? pdfInput.files[0] : null;
+                    if (!pdfFile) {
+                        return { error: `${label} requires a prior-art PDF.` };
+                    }
+                    payload.push({ label, has_diagram: !!diagramFile });
+                    pdfFiles.push(pdfFile);
+                } else {
+                    const abstractInput = card.querySelector('.prior-art-abstract');
+                    const abstract = abstractInput ? abstractInput.value.trim() : '';
+                    if (!abstract) {
+                        return { error: `${label} requires abstract text.` };
+                    }
+                    payload.push({ label, abstract, has_diagram: !!diagramFile });
                 }
-                payload.push({ label, abstract, diagram, summary });
+
+                if (diagramFile) {
+                    diagramFiles.push(diagramFile);
+                }
             }
-            return { payload };
+            return { mode, payload, pdfFiles, diagramFiles };
         }
 
         addPriorArtBtn.addEventListener('click', () => addPriorArtCard());
+        priorArtInputMode.addEventListener('change', () => {
+            priorArtsContainer.innerHTML = '';
+            addPriorArtCard();
+            updatePriorArtHelpText();
+        });
         addPriorArtCard();
+        updatePriorArtHelpText();
 
         function showStatus(message, type = 'info') {
             statusContainer.innerHTML = `
@@ -987,7 +1043,18 @@
             }
              
             const formData = new FormData(this);
-            formData.set('prior_arts_json', JSON.stringify(priorArtsResult.payload));
+            formData.set('prior_art_input_mode', priorArtsResult.mode);
+            if (priorArtsResult.mode === 'pdf') {
+                formData.set('prior_arts_meta_json', JSON.stringify(priorArtsResult.payload));
+                priorArtsResult.pdfFiles.forEach((file) => {
+                    formData.append('prior_art_pdfs', file, file.name);
+                });
+            } else {
+                formData.set('prior_arts_json', JSON.stringify(priorArtsResult.payload));
+            }
+            priorArtsResult.diagramFiles.forEach((file) => {
+                formData.append('prior_art_diagrams', file, file.name);
+            });
              
             // Disable button and show loading
             submitBtn.disabled = true;

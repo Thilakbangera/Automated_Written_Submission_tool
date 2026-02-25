@@ -686,51 +686,71 @@ with colA:
 
 
     st.markdown("#### Prior Arts (D1-Dn)")
+    prior_art_input_mode_label = st.selectbox(
+        "Prior Art Input Mode",
+        options=["From Prior-Art PDF (Auto Abstract Extraction)", "Manual Abstract Text"],
+        index=0,
+        key=f"prior_art_mode_{ck}",
+        help="Choose how prior arts are provided.",
+    )
+    prior_art_input_mode = "pdf" if prior_art_input_mode_label.startswith("From Prior-Art PDF") else "text"
     if st.button("+ Add Prior Art", use_container_width=True, key=f"add_prior_art_{ck}"):
         st.session_state.prior_art_count += 1
         st.rerun()
 
     prior_arts_entries = []
+    prior_art_pdf_uploads = []
     prior_art_diagram_uploads = []
     prior_arts_complete = True
     for idx in range(max(1, st.session_state.prior_art_count)):
         label = f"D{idx + 1}"
         st.markdown(f"##### {label}")
-        abstract = st.text_area(
-            f"{label} Abstract",
-            key=f"prior_art_{idx}_abstract_{ck}",
-            help=f"Enter abstract for {label}",
-            height=90,
-        )
+        abstract = ""
+        prior_pdf = None
+        if prior_art_input_mode == "pdf":
+            prior_pdf = st.file_uploader(
+                f"{label} Prior Art PDF",
+                type=["pdf"],
+                key=f"prior_art_{idx}_pdf_{ck}",
+                help=f"Upload prior-art PDF for {label}",
+            )
+            if prior_pdf:
+                _render_file_preview(prior_pdf)
+        else:
+            abstract = st.text_area(
+                f"{label} Abstract",
+                key=f"prior_art_{idx}_abstract_{ck}",
+                help=f"Enter abstract for {label}",
+                height=90,
+            )
         diagram_img = st.file_uploader(
-            f"{label} Diagram Image",
+            f"{label} Diagram Image (Optional)",
             type=["png", "jpg", "jpeg"],
             key=f"prior_art_{idx}_diagram_image_{ck}",
-            help=f"Upload diagram image for {label}",
+            help=f"Optional diagram image for {label}",
         )
         if diagram_img:
             _render_file_preview(diagram_img)
-        summary = st.text_area(
-            f"{label} Summary",
-            key=f"prior_art_{idx}_summary_{ck}",
-            help=f"Enter summary for {label}",
-            height=90,
-        )
-        if not (abstract.strip() and summary.strip() and diagram_img is not None):
-            prior_arts_complete = False
+        if prior_art_input_mode == "pdf":
+            if prior_pdf is None:
+                prior_arts_complete = False
+        else:
+            if not abstract.strip():
+                prior_arts_complete = False
+        prior_art_pdf_uploads.append(prior_pdf)
         prior_art_diagram_uploads.append(diagram_img)
         prior_arts_entries.append(
             {
                 "label": label,
                 "abstract": abstract.strip(),
-                "summary": summary.strip(),
+                "has_diagram": diagram_img is not None,
             }
         )
 
     st.markdown("</div>", unsafe_allow_html=True)
 
     # ── FIX 3: Input file viewer expander ────────────────────────────────────
-    prior_arts_any = any((pa["abstract"] or pa["summary"]) for pa in prior_arts_entries) or any(prior_art_diagram_uploads)
+    prior_arts_any = any(prior_art_pdf_uploads) or any((pa.get("abstract", "") for pa in prior_arts_entries)) or any(prior_art_diagram_uploads)
     any_uploaded = any([hn, spec, amended, bool(tech_imgs), prior_arts_any])
     if any_uploaded:
         with st.expander("👁️  Preview input files", expanded=False):
@@ -879,11 +899,20 @@ if go:
     ]
     for img in tech_imgs:
         files_list.append(("tech_solution_images", _as_file_tuple(img)))
+    for pdf in prior_art_pdf_uploads:
+        if pdf is not None:
+            files_list.append(("prior_art_pdfs", _as_file_tuple(pdf)))
     for img in prior_art_diagram_uploads:
         if img is not None:
             files_list.append(("prior_art_diagrams", _as_file_tuple(img)))
 
-    data_dict = {"city": city, "prior_arts_json": json.dumps(prior_arts_entries)}
+    data_dict = {"city": city, "prior_art_input_mode": prior_art_input_mode}
+    if prior_art_input_mode == "pdf":
+        meta = [{"label": e.get("label", ""), "has_diagram": bool(e.get("has_diagram", False))} for e in prior_arts_entries]
+        data_dict["prior_arts_meta_json"] = json.dumps(meta)
+    else:
+        payload = [{"label": e.get("label", ""), "abstract": e.get("abstract", ""), "has_diagram": bool(e.get("has_diagram", False))} for e in prior_arts_entries]
+        data_dict["prior_arts_json"] = json.dumps(payload)
 
     with st.status("Generating…", expanded=False) as status:
         try:

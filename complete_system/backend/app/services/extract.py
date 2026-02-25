@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 from collections import Counter
+import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import urlopen
 
 import pdfplumber
 
@@ -255,6 +260,445 @@ def read_text_any(path: str) -> str:
 
 def _clean(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "")).strip()
+
+
+_PRIOR_ART_ABSTRACT_HEADINGS = [
+    "abstract",
+    "abstrait",
+    "abrege",
+    "abrégé",
+    "resumen",
+    "resumo",
+    "riassunto",
+    "zusammenfassung",
+    "samenvatting",
+    "sammanfattning",
+    "özet",
+    "摘要",
+    "要約",
+    "概要",
+]
+
+_PRIOR_ART_STOP_HEADINGS = [
+    "claim",
+    "claims",
+    "what is claimed",
+    "field",
+    "technical field",
+    "background",
+    "detailed description",
+    "description",
+    "brief description",
+    "embodiment",
+    "drawings",
+    "prior art",
+    "revendications",
+    "reivindicaciones",
+    "ansprüche",
+    "权利要求",
+]
+
+_TRANSLATE_TIMEOUT_S = 8
+_TRANSLATE_MAX_CHARS = 2800
+_PRIOR_ART_MAX_ABSTRACT_WORDS = 900
+
+
+def _read_prior_art_pdf_lines(path: str, max_pages: int = 5) -> List[str]:
+    pages_lines: List[List[str]] = []
+    try:
+        with pdfplumber.open(path) as pdf:
+            for page in pdf.pages[: max(1, max_pages)]:
+                t = page.extract_text(layout=True) or page.extract_text() or ""
+                page_lines: List[str] = []
+                for raw in t.splitlines():
+                    line = re.sub(r"\s+", " ", (raw or "").strip())
+                    if not line:
+                        page_lines.append("")
+                        continue
+                    if _is_prior_art_header_footer_noise(line):
+                        continue
+                    if "(cid:" in line.lower():
+                        continue
+                    page_lines.append(line)
+                pages_lines.append(page_lines)
+    except Exception:
+        return []
+
+    if not pages_lines:
+        return []
+
+    # Remove repeated page-edge noise (headers/footers) seen across most pages.
+    norm_page_counts: Counter[str] = Counter()
+    for page_lines in pages_lines:
+        seen = {_normalize_pdf_line(ln) for ln in page_lines if ln and ln.strip()}
+        for n in seen:
+            norm_page_counts[n] += 1
+
+    repeated_threshold = max(2, int(len(pages_lines) * 0.65))
+    repeated_lines = {
+        n
+        for n, cnt in norm_page_counts.items()
+        if cnt >= repeated_threshold and len(n) <= 180
+    }
+
+    out: List[str] = []
+    prev_blank = False
+    for page_lines in pages_lines:
+        for ln in page_lines:
+            if not ln:
+                if out and not prev_blank:
+                    out.append("")
+                prev_blank = True
+                continue
+            n = _normalize_pdf_line(ln)
+            if n in repeated_lines and not re.search(r"\babstract\b|^\s*\[?\s*57\s*\]?\s*abstract\b", n, re.I):
+                continue
+            if _is_prior_art_header_footer_noise(ln):
+                continue
+            out.append(ln)
+            prev_blank = False
+    return out
+
+
+def _is_prior_art_metadata_line(line: str) -> bool:
+    x = _clean(line)
+    if not x:
+        return True
+    low = x.lower()
+    if re.fullmatch(r"[0-9\W_]+", x):
+        return True
+    if re.fullmatch(r"[a-z]?\d{2,}[a-z0-9/\-]*", low):
+        return True
+    if re.search(
+        r"\b(application|publication|applicant|inventor|priority|filing|date|int\.?cl|ipc|cpc|attorney|agent)\b",
+        low,
+    ):
+        return True
+    return False
+
+
+def _looks_like_prior_art_heading(line: str) -> bool:
+    x = _clean(line)
+    if not x:
+        return False
+    if len(x) > 140:
+        return False
+    low = x.lower().rstrip(":")
+    if any(h in low for h in _PRIOR_ART_STOP_HEADINGS):
+        return True
+    if x.endswith(":"):
+        return True
+    words = re.findall(r"[A-Za-z0-9\u00C0-\u024F]+", x)
+    if not words:
+        return False
+    upper_words = sum(1 for w in words if w.upper() == w and len(w) > 1)
+    return upper_words >= max(2, int(len(words) * 0.65))
+
+
+def _clean_prior_art_abstract_text(s: str) -> str:
+    txt = (s or "").replace("\r", "\n")
+    lines = [ln.strip() for ln in txt.splitlines()]
+
+    out: List[str] = []
+    prev_blank = False
+    for ln in lines:
+        if not ln:
+            if out and not prev_blank:
+                out.append("")
+            prev_blank = True
+            continue
+        out.append(ln)
+        prev_blank = False
+
+    txt = "\n".join(out).strip()
+    paras = [p for p in re.split(r"\n{2,}", txt) if p and p.strip()]
+    cleaned_paras: List[str] = []
+    for p in paras:
+        q = re.sub(r"-\s*\n\s*", "", p)
+        q = re.sub(r"\s*\n\s*", " ", q)
+        q = re.sub(r"\s+([,.;:])", r"\1", q)
+        q = re.sub(r"\(\s+", "(", q)
+        q = re.sub(r"\s+\)", ")", q)
+        q = _clean(q)
+        if q:
+            cleaned_paras.append(q)
+    return "\n\n".join(cleaned_paras).strip()
+
+
+def _is_prior_art_header_footer_noise(line: str) -> bool:
+    x = _clean(line)
+    if not x:
+        return True
+    low = _normalize_pdf_line(x)
+    if not low:
+        return True
+    if _line_is_page_marker(x):
+        return True
+    if _line_is_edge_header_footer_noise(x):
+        return True
+    if re.search(r"\b(?:https?://|www\.)\S+", low):
+        return True
+    if re.search(r"\b(?:google\s+patents|patentscope|espacenet|patent\s+images|lens\.org|wipo)\b", low):
+        return True
+    if re.search(r"\b(?:copyright|all rights reserved)\b", low):
+        return True
+    if re.fullmatch(r"(?:date\s*[:\-]\s*)?\d{1,2}[./-]\d{1,2}[./-]\d{2,4}", low):
+        return True
+    if re.fullmatch(r"(?:page|pg)\s*\d+\s*(?:of|/)\s*\d+", low):
+        return True
+    return False
+
+
+def _trim_abstract_without_mid_sentence_cut(text: str, max_words: int = _PRIOR_ART_MAX_ABSTRACT_WORDS) -> str:
+    txt = _clean_prior_art_abstract_text(text)
+    if not txt:
+        return ""
+    words = txt.split()
+    if len(words) <= max_words:
+        return txt
+    cropped = " ".join(words[:max_words]).strip()
+    last_punct = max(cropped.rfind(". "), cropped.rfind("; "), cropped.rfind("? "), cropped.rfind("! "))
+    if last_punct >= int(len(cropped) * 0.6):
+        cropped = cropped[: last_punct + 1]
+    return cropped.strip()
+
+
+def _looks_non_english(text: str) -> bool:
+    txt = _clean(text)
+    if not txt:
+        return False
+
+    cjk_chars = sum(
+        1
+        for ch in txt
+        if ("\u4e00" <= ch <= "\u9fff") or ("\u3040" <= ch <= "\u30ff") or ("\uac00" <= ch <= "\ud7af")
+    )
+    if cjk_chars >= 8:
+        return True
+
+    alpha_chars = [ch for ch in txt if ch.isalpha()]
+    if not alpha_chars:
+        return False
+
+    ascii_alpha = sum(1 for ch in alpha_chars if ("a" <= ch.lower() <= "z"))
+    ascii_ratio = ascii_alpha / max(1, len(alpha_chars))
+    if ascii_ratio < 0.45:
+        return True
+
+    if _non_ascii_ratio(txt) <= 0.25:
+        return False
+
+    if re.search(r"\b(the|and|of|to|for|with|method|system|apparatus|device|invention)\b", txt, re.I):
+        return False
+    return True
+
+
+def _extract_google_translate_text(payload: object) -> str:
+    if not isinstance(payload, list) or not payload:
+        return ""
+    head = payload[0]
+    if not isinstance(head, list):
+        return ""
+    parts: List[str] = []
+    for row in head:
+        if isinstance(row, list) and row:
+            part = _clean(str(row[0] or ""))
+            if part:
+                parts.append(part)
+    return " ".join(parts).strip()
+
+
+def _translate_chunk_to_english(chunk: str) -> str:
+    src = _clean(chunk)
+    if not src:
+        return ""
+    url = (
+        "https://translate.googleapis.com/translate_a/single?client=gtx"
+        "&sl=auto&tl=en&dt=t&q="
+        + quote(src, safe="")
+    )
+    try:
+        with urlopen(url, timeout=_TRANSLATE_TIMEOUT_S) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+        translated = _extract_google_translate_text(json.loads(raw))
+        return translated or src
+    except (HTTPError, URLError, OSError, ValueError, json.JSONDecodeError):
+        return src
+
+
+def _translate_text_to_english(text: str) -> str:
+    src = _clean_prior_art_abstract_text(text)
+    if not src:
+        return ""
+    enabled = os.getenv("PRIOR_ART_TRANSLATE_TO_ENGLISH", "1").strip().lower()
+    if enabled in {"0", "false", "no", "off"}:
+        return src
+
+    paras = [p.strip() for p in re.split(r"\n{2,}", src) if p and p.strip()]
+    if not paras:
+        paras = [src]
+
+    out: List[str] = []
+    for para in paras:
+        if len(para) <= _TRANSLATE_MAX_CHARS:
+            out.append(_translate_chunk_to_english(para))
+            continue
+
+        words = para.split()
+        if not words:
+            continue
+        chunks: List[str] = []
+        current: List[str] = []
+        current_len = 0
+        for w in words:
+            add_len = len(w) + 1
+            if current and (current_len + add_len) > _TRANSLATE_MAX_CHARS:
+                chunks.append(" ".join(current))
+                current = [w]
+                current_len = len(w)
+            else:
+                current.append(w)
+                current_len += add_len
+        if current:
+            chunks.append(" ".join(current))
+
+        for chunk in chunks:
+            out.append(_translate_chunk_to_english(chunk))
+
+    translated = _clean_prior_art_abstract_text("\n\n".join(out))
+    return translated or src
+
+
+def _extract_prior_art_abstract_by_heading(lines: List[str]) -> str:
+    if not lines:
+        return ""
+    headings = [h.lower() for h in _PRIOR_ART_ABSTRACT_HEADINGS]
+
+    for i, line in enumerate(lines):
+        x = _clean(line)
+        if not x:
+            continue
+        low = x.lower()
+
+        inline = ""
+        if re.match(r"^\[?\s*57\s*\]?\s*abstract\b", low):
+            m = re.match(r"^\[?\s*57\s*\]?\s*abstract\b\s*[:\-]?\s*(.*)$", x, re.I)
+            inline = _clean(m.group(1) if m else "")
+        else:
+            for h in headings:
+                m = re.match(rf"^\s*{re.escape(h)}\b\s*[:\-]?\s*(.*)$", x, re.I)
+                if m:
+                    inline = _clean(m.group(1))
+                    break
+
+        is_heading = bool(inline or low in headings or low in [f"{h}:" for h in headings] or re.match(r"^\[?\s*57\s*\]?\s*abstract\b\s*:?\s*$", low))
+        if not is_heading:
+            continue
+
+        picked: List[str] = []
+        wc = 0
+        if inline:
+            picked.append(inline)
+            wc += len(inline.split())
+
+        j = i + 1
+        blank_streak = 0
+        while j < len(lines):
+            ln = _clean(lines[j])
+            if not ln:
+                blank_streak += 1
+                # Layout extraction often introduces blank lines. Stop only after enough content.
+                if wc >= 140 and blank_streak >= 2:
+                    break
+                j += 1
+                continue
+            blank_streak = 0
+            if _is_prior_art_header_footer_noise(ln):
+                if wc >= 120:
+                    break
+                j += 1
+                continue
+            if _looks_like_prior_art_heading(ln) and wc >= 90:
+                break
+            if _is_prior_art_metadata_line(ln):
+                if wc < 20:
+                    j += 1
+                    continue
+                if wc >= 120:
+                    break
+            picked.append(ln)
+            wc += len(ln.split())
+            if wc >= 750:
+                break
+            j += 1
+
+        cand = _clean_prior_art_abstract_text("\n".join(picked))
+        if len(cand.split()) >= 20:
+            return cand
+    return ""
+
+
+def _extract_prior_art_abstract_fallback(lines: List[str]) -> str:
+    if not lines:
+        return ""
+
+    blocks: List[str] = []
+    cur: List[str] = []
+    for ln in lines:
+        x = _clean(ln)
+        if not x:
+            if cur:
+                blocks.append(" ".join(cur))
+                cur = []
+            continue
+        if _is_prior_art_metadata_line(x):
+            if cur:
+                blocks.append(" ".join(cur))
+                cur = []
+            continue
+        cur.append(x)
+    if cur:
+        blocks.append(" ".join(cur))
+
+    if not blocks:
+        return ""
+
+    def score(b: str) -> float:
+        t = _clean(b)
+        wc = len(t.split())
+        if wc < 25:
+            return -100.0
+        s = 0.0
+        if 45 <= wc <= 280:
+            s += 5.0
+        if re.search(r"\b(the present invention|discloses|relates to|provides|method|apparatus|system|device|implemented)\b", t, re.I):
+            s += 2.0
+        if re.search(r"\bclaim[s]?\b", t, re.I):
+            s -= 2.5
+        digit_ratio = sum(ch.isdigit() for ch in t) / max(1, len(t))
+        if digit_ratio > 0.12:
+            s -= 1.5
+        return s
+
+    best = max(blocks[:14], key=score)
+    return _clean_prior_art_abstract_text(best)
+
+
+def extract_prior_art_abstract_from_pdf(pdf_path: str) -> str:
+    """Extract the most likely abstract text from a prior-art PDF."""
+    lines = _read_prior_art_pdf_lines(pdf_path, max_pages=5)
+    abstract = _extract_prior_art_abstract_by_heading(lines)
+    if not abstract:
+        abstract = _extract_prior_art_abstract_fallback(lines)
+
+    if not abstract:
+        full_text = read_pdf_text(pdf_path)
+        abstract = _extract_prior_art_abstract_fallback(full_text.splitlines())
+
+    abstract = _clean_prior_art_abstract_text(abstract)
+    if abstract and _looks_non_english(abstract):
+        abstract = _clean_prior_art_abstract_text(_translate_text_to_english(abstract))
+    return _trim_abstract_without_mid_sentence_cut(abstract)
 
 
 def _find_date(patterns: List[str], text: str) -> str:
