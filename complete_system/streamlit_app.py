@@ -661,6 +661,12 @@ with colA:
         help="Enter the Patent Office city (e.g., Chennai, Mumbai, Delhi, Kolkata)",
         key=f"city_{ck}",
     )
+    filed_on = st.text_input(
+        "📅 Filed On",
+        value="",
+        help="Enter application filed date (e.g., DD/MM/YYYY)",
+        key=f"filed_on_{ck}",
+    )
     hn = st.file_uploader("📋 Hearing Notice (HN)", type=["pdf"],
                           help="Upload the Hearing Notice PDF", key=f"hn_{ck}")
     if hn:
@@ -801,6 +807,10 @@ with colB:
             <span class="ws-summary-val {'ok' if city else 'missing'}">{'OK ' + city if city else 'Missing'}</span>
           </div>
           <div class="ws-summary-row">
+            <span class="ws-summary-key">Filed On</span>
+            <span class="ws-summary-val {'ok' if filed_on else 'missing'}">{'OK ' + filed_on if filed_on else 'Missing'}</span>
+          </div>
+          <div class="ws-summary-row">
             <span class="ws-summary-key">Hearing Notice</span>
             <span class="ws-summary-val {'ok' if hn else 'missing'}">{'OK ' + hn.name[:20] if hn else 'Missing'}</span>
           </div>
@@ -843,11 +853,11 @@ with colB:
         unsafe_allow_html=True,
     )
 
-    has_required = all([city, hn, spec, amended, tech_imgs and len(tech_imgs) > 0, prior_arts_complete])
+    has_required = all([city, filed_on, hn, spec, amended, tech_imgs and len(tech_imgs) > 0, prior_arts_complete])
     if not has_required:
         st.markdown(
             '<div class="ws-warn"><span class="ws-warn-icon">⚠</span>'
-            ' All fields are required. Complete all uploads and enter the office city.</div>',
+            ' All fields are required. Complete all uploads and enter office city + filed on date.</div>',
             unsafe_allow_html=True,
         )
 
@@ -879,6 +889,7 @@ _render_steps(
 if go:
     missing = []
     if not city:        missing.append("To Office (City)")
+    if not filed_on:    missing.append("Filed On")
     if not prior_arts_complete: missing.append("Prior Arts (D1-Dn)")
     if not hn:          missing.append("Hearing Notice")
     if not spec:        missing.append("Specification")
@@ -906,7 +917,7 @@ if go:
         if img is not None:
             files_list.append(("prior_art_diagrams", _as_file_tuple(img)))
 
-    data_dict = {"city": city, "prior_art_input_mode": prior_art_input_mode}
+    data_dict = {"city": city, "filed_on": filed_on, "prior_art_input_mode": prior_art_input_mode}
     if prior_art_input_mode == "pdf":
         meta = [{"label": e.get("label", ""), "has_diagram": bool(e.get("has_diagram", False))} for e in prior_arts_entries]
         data_dict["prior_arts_meta_json"] = json.dumps(meta)

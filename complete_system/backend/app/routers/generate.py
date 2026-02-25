@@ -24,6 +24,7 @@ async def generate(
     hn: UploadFile = File(..., description="Hearing Notice PDF"),
     specification: UploadFile = File(..., description="Complete specification PDF"),
     city: str = Form("Chennai", description="Patent Office City (e.g., Chennai, Mumbai, Delhi)"),
+    filed_on: str = Form("", description="Filed On date (manual input from UI)"),
     prior_art_input_mode: str = Form("text", description="Prior-art mode: 'text' or 'pdf'"),
     prior_arts_json: Optional[str] = Form(
         None,
@@ -39,6 +40,10 @@ async def generate(
     amended_claims: Optional[UploadFile] = File(None, description="Amended claims (PDF/DOCX/TXT) (optional)"),
     tech_solution_images: Optional[List[UploadFile]] = File(None, description="Technical solution diagram screenshots (PNG/JPG)"),
 ):
+    filed_on_value = (filed_on or "").strip()
+    if not filed_on_value:
+        raise HTTPException(status_code=422, detail="filed_on is required.")
+
     mode = (prior_art_input_mode or "text").strip().lower()
     if mode not in {"text", "pdf"}:
         raise HTTPException(status_code=422, detail="prior_art_input_mode must be either 'text' or 'pdf'.")
@@ -207,6 +212,7 @@ async def generate(
                 amended_claims_path=amended_path,
                 tech_solution_images_paths=tech_solution_image_paths,
                 city=city,
+                filed_on_input=filed_on_value,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

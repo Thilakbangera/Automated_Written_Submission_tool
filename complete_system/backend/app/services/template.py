@@ -110,6 +110,12 @@ def insert_prior_art_analysis_before_feature_table(
             p.text = text
         return p
 
+    def _insert_text_before_table(text: str, make_red: bool = False) -> None:
+        p = _insert_paragraph_before_table()
+        run = p.add_run(text)
+        if make_red:
+            run.font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
+
     if sequence:
         for item in sequence:
             if not isinstance(item, dict):
@@ -128,13 +134,14 @@ def insert_prior_art_analysis_before_feature_table(
             else:
                 text = str(item.get("text", "")).strip()
                 if text:
-                    _insert_paragraph_before_table(text=text)
+                    is_combined_diff = bool(re.match(r"^\s*Combined\s+difference\s+over\b", text, re.I))
+                    _insert_text_before_table(text=text, make_red=is_combined_diff)
         return
 
     if txt:
         for block in [b.strip() for b in re.split(r"\n{2,}", txt) if b and b.strip()]:
-            p = _insert_paragraph_before_table()
-            p.text = block
+            is_combined_diff = bool(re.match(r"^\s*Combined\s+difference\s+over\b", block, re.I))
+            _insert_text_before_table(text=block, make_red=is_combined_diff)
 
     for item in images:
         if isinstance(item, dict):
@@ -349,6 +356,12 @@ def insert_tech_solution_images(doc: Document, image_paths: list, heading_text: 
         cap_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         cap_p.add_run(f"FIG. {fig_no}")
         new_paras.append(cap_p)
+
+        reply_p = doc.add_paragraph()
+        reply_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        reply_run = reply_p.add_run("[Enter Description of the diagram]")
+        reply_run.font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
+        new_paras.append(reply_p)
         fig_no += 1
 
     anchor = heading_p._p
@@ -400,8 +413,14 @@ def _insert_images_with_captions(doc: Document, placeholder: str, image_paths: l
                 cap_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 cap_p.add_run(f"FIG. {fig_no}")
                 fig_no += 1
+                
+                # drafter reply marker just after each diagram block
+                reply_p = insert_paragraph_after(cap_p)
+                reply_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                reply_run = reply_p.add_run("[Enter Description of the diagram]")
+                reply_run.font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
 
-                anchor = cap_p  # continue inserting after caption
+                anchor = reply_p  # continue inserting after marker
 
             return
 
@@ -424,4 +443,9 @@ def _insert_images_with_captions(doc: Document, placeholder: str, image_paths: l
                 cap_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 cap_p.add_run(f"FIG. {fig_no}")
                 fig_no += 1
+
+                reply_p = doc.add_paragraph()
+                reply_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                reply_run = reply_p.add_run("[Enter Description of the diagram]")
+                reply_run.font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
             return

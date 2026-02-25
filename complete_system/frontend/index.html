@@ -732,6 +732,11 @@
                         </div>
 
                         <div class="form-group">
+                            <label class="form-label" for="filed_on">Filed On Date</label>
+                            <input type="text" id="filed_on" name="filed_on" class="text-input" placeholder="DD/MM/YYYY" required>
+                        </div>
+
+                        <div class="form-group">
                             <label class="form-label">Prior Arts (D1-Dn)</label>
                             <select id="priorArtInputMode" class="text-input" style="margin-bottom:0.75rem;">
                                 <option value="pdf">From Prior-Art PDF (Auto Abstract Extraction)</option>
@@ -871,6 +876,7 @@
         const addPriorArtBtn = document.getElementById('addPriorArtBtn');
         const priorArtInputMode = document.getElementById('priorArtInputMode');
         const priorArtHelp = document.getElementById('priorArtHelp');
+        const filedOnInput = document.getElementById('filed_on');
         
         let generatedBlob = null;
         let generatedFilename = 'Written_Submission.docx';
@@ -1036,6 +1042,13 @@
         form.addEventListener('submit', async function(e) {
             e.preventDefault();
 
+            const filedOn = filedOnInput ? filedOnInput.value.trim() : '';
+            if (!filedOn) {
+                showStatus('Filed On date is required.', 'error');
+                if (filedOnInput) filedOnInput.focus();
+                return;
+            }
+
             const priorArtsResult = collectPriorArts();
             if (priorArtsResult.error) {
                 showStatus(priorArtsResult.error, 'error');
@@ -1043,6 +1056,7 @@
             }
              
             const formData = new FormData(this);
+            formData.set('filed_on', filedOn);
             formData.set('prior_art_input_mode', priorArtsResult.mode);
             if (priorArtsResult.mode === 'pdf') {
                 formData.set('prior_arts_meta_json', JSON.stringify(priorArtsResult.payload));

@@ -522,6 +522,29 @@ def _normalize_ws_text(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "")).strip()
 
 
+def _sentence_safe_excerpt(text: str, max_chars: int = 260, max_chars_hard: int = 420) -> str:
+    """Return a short excerpt without cutting in the middle of a sentence when possible."""
+    txt = _normalize_ws_text(text)
+    if not txt:
+        return ""
+    if len(txt) <= max_chars:
+        return txt
+
+    boundaries = [m.end() for m in re.finditer(r"[.;!?](?:\s|$)", txt)]
+    if boundaries:
+        after = [b for b in boundaries if max_chars <= b <= max_chars_hard]
+        if after:
+            return txt[: after[0]].strip()
+        before = [b for b in boundaries if b <= max_chars]
+        if before and before[-1] >= 80:
+            return txt[: before[-1]].strip()
+
+    # Fallback: cut at nearest word boundary.
+    cut = txt[:max_chars]
+    cut = re.sub(r"\s+\S*$", "", cut).strip()
+    return cut or txt[:max_chars].strip()
+
+
 def _normalize_prior_art_entries(prior_arts_entries: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]]:
     """Normalize incoming prior-art entries and assign stable D-labels."""
     normalized: List[Dict[str, str]] = []
@@ -787,9 +810,10 @@ def _build_prior_art_analysis_sequence(prior_arts: List[Dict[str, str]], claim1_
     claim_basis = _normalize_ws_text(claim1_features)[:1400]
     focus_bits: List[str] = []
     for pa in prior_arts:
-        abstract = _normalize_ws_text(pa.get("abstract", ""))[:260]
-        if abstract:
-            focus_bits.append(f"{pa['label']} discloses {abstract}")
+        abstract_short = _sentence_safe_excerpt(pa.get("abstract", ""), max_chars=260, max_chars_hard=440)
+        if abstract_short:
+            abstract_short = abstract_short.rstrip(" .;,:")
+            focus_bits.append(f"{pa['label']} discloses {abstract_short}")
     prior_focus = "; ".join(focus_bits)
     prior_set = dx_range or ", ".join(pa["label"] for pa in prior_arts)
 
@@ -818,6 +842,7 @@ def generate_written_submission(
     amended_claims_path: Optional[str] = None,
     tech_solution_images_paths: Optional[list] = None,
     city: str = "Chennai",
+    filed_on_input: str = "",
 ):
     """Generate WS using HN + specification + manually provided prior-arts."""
     hn_meta = parse_case_meta_from_fer_or_hn(hn_path)
@@ -918,7 +943,7 @@ def generate_written_submission(
     mapping = {
         "{{WS_DATE}}": ws_date,
         "{{APP_NO}}": app_no,
-        "{{FILED_ON}}": _first_nonempty(hn_meta.filed_on),
+        "{{FILED_ON}}": _first_nonempty(filed_on_input, hn_meta.filed_on),
         "{{APPLICANT_NAME}}": applicant,
         "{{CONTROLLER_NAME}}": controller,
         "{{AGENT_NAMES}}": agents,
