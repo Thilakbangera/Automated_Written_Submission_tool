@@ -111,6 +111,7 @@ def _strip_line_number_artifacts(text: str) -> str:
         return ""
     t = re.sub(r"(?m)^\s*\d{1,3}\s*$", "", t)
     t = re.sub(r"(?m)^\s*\d{1,3}\s+(?=[A-Za-z\[\(])", "", t)
+    t = re.sub(r"(?m)^\s*\d{1,3}\s+(?=[\uF000-\uF8FF])", "", t)
 
     def repl(m: re.Match) -> str:
         try:
@@ -155,6 +156,21 @@ def _strip_line_number_artifacts(text: str) -> str:
     return t.strip()
 
 
+def _strip_spec_paragraph_markers(text: str) -> str:
+    """Remove numbered paragraph markers like [0003] and PUA glyph forms."""
+    t = text or ""
+    if not t:
+        return ""
+    # Standard bracketed paragraph markers.
+    t = re.sub(r"(?m)^\s*\[\s*\d{3,6}\s*\]\s*", "", t)
+    t = re.sub(r"(?<=\s)\[\s*\d{3,6}\s*\]\s*", " ", t)
+    # Common private-use glyph rendering, e.g., \uf05b\uf030\uf030\uf030\uf033\uf05d
+    t = re.sub(r"(?m)^\s*\uf05b\s*[\uf030-\uf039]{3,6}\s*\uf05d\s*", "", t)
+    t = re.sub(r"(?<=\s)\uf05b\s*[\uf030-\uf039]{3,6}\s*\uf05d\s*", " ", t)
+    t = re.sub(r"[ \t]{2,}", " ", t)
+    return t.strip()
+
+
 def _is_spec_noise_line(line: str) -> bool:
     ln = re.sub(r"\s+", " ", (line or "")).strip()
     if not ln:
@@ -175,6 +191,7 @@ def _is_spec_noise_line(line: str) -> bool:
 
 def _line_heading_remainder(line: str, heading_patterns: List[str]) -> Tuple[bool, str]:
     ln = re.sub(r"\s+", " ", (line or "")).strip()
+    ln = re.sub(r"^\d{1,3}\s+(?=[A-Za-z\[\(\uF000-\uF8FF])", "", ln)
     if not ln:
         return False, ""
     for pat in heading_patterns:
@@ -187,6 +204,28 @@ def _line_heading_remainder(line: str, heading_patterns: List[str]) -> Tuple[boo
 def _line_matches_heading(line: str, heading_patterns: List[str]) -> bool:
     ok, _ = _line_heading_remainder(line, heading_patterns)
     return ok
+
+
+def _line_prefix_before_embedded_heading(line: str, heading_patterns: List[str]) -> Optional[str]:
+    ln = re.sub(r"\s+", " ", (line or "")).strip()
+    if not ln:
+        return None
+
+    cut_positions: List[int] = []
+    for pat in heading_patterns:
+        m = re.search(
+            rf"(?<=[\.;:])\s+(?=(?:{pat})(?:\s*[:\-]|\b))",
+            ln,
+            re.I,
+        )
+        if m:
+            cut_positions.append(m.start())
+    if not cut_positions:
+        return None
+
+    cut = min(cut_positions)
+    prefix = ln[:cut].strip()
+    return prefix if prefix else None
 
 
 def _extract_spec_section_block(spec_text: str, start_headings: List[str], end_headings: List[str]) -> str:
@@ -207,15 +246,23 @@ def _extract_spec_section_block(spec_text: str, start_headings: List[str], end_h
         return ""
 
     end_idx = len(lines)
+    end_line_prefix = ""
     for j in range(start_idx + 1, len(lines)):
         if _line_matches_heading(lines[j], end_headings):
             end_idx = j
+            break
+        prefix = _line_prefix_before_embedded_heading(lines[j], end_headings)
+        if prefix is not None:
+            end_idx = j
+            end_line_prefix = prefix
             break
 
     block_lines = []
     if start_tail:
         block_lines.append(start_tail)
     block_lines.extend(lines[start_idx + 1 : end_idx])
+    if end_line_prefix:
+        block_lines.append(end_line_prefix)
     cleaned: List[str] = []
     prev_blank = False
     for ln in block_lines:
@@ -228,6 +275,7 @@ def _extract_spec_section_block(spec_text: str, start_headings: List[str], end_h
             continue
         norm = re.sub(r"[ \t]+", " ", ln).rstrip()
         norm = re.sub(r"^\s*\d{1,3}\s+(?=[A-Za-z\[\(])", "", norm)
+        norm = re.sub(r"^\s*\d{1,3}\s+(?=[\uF000-\uF8FF])", "", norm)
         norm = norm.strip()
         if not norm:
             continue
@@ -238,7 +286,7 @@ def _extract_spec_section_block(spec_text: str, start_headings: List[str], end_h
 
 
 def _format_spec_block_for_ws(block: str) -> str:
-    txt = _strip_line_number_artifacts(block or "")
+    txt = _strip_spec_paragraph_markers(_strip_line_number_artifacts(block or ""))
     if not txt:
         return ""
 
@@ -258,6 +306,7 @@ def _format_spec_block_for_ws(block: str) -> str:
             cur = ""
 
     for ln in lines:
+        ln = _strip_spec_paragraph_markers(ln)
         if not ln:
             flush()
             continue
@@ -288,11 +337,13 @@ def _extract_tech_problem(spec_text: str) -> str:
         ],
         end_headings=[
             r"SUMMARY\s+OF\s+THE\s+INVENTION",
+            r"SUMMARY\s+OF\s+THE\s+DISCLOSURE",
             r"SUMMARY",
             r"BRIEF\s+SUMMARY",
             r"OBJECTIVE\s+OF\s+THE\s+INVENTION",
             r"OBJECT\s+OF\s+INVENTION",
-            r"DETAILED\s+DESCRIPTION(?:\s+OF\s+THE\s+INVENTION|\s+OF\s+INVENTION)?",
+            r"OBJECT(?:IVE|S)?\s+OF\s+(?:THE\s+)?(?:INVENTION|DISCLOSURE)",
+            r"DETAILED\s+DESCRIPTION\b",
             r"BRIEF\s+DESCRIPTION(?:\s+OF\s+DRAWINGS?)?",
             r"CLAIMS?",
         ],
@@ -306,13 +357,20 @@ def _extract_tech_solution(spec_text: str) -> str:
         spec_text,
         start_headings=[
             r"SUMMARY\s+OF\s+THE\s+INVENTION",
+            r"SUMMARY\s+OF\s+THE\s+DISCLOSURE",
             r"SUMMARY",
             r"BRIEF\s+SUMMARY",
         ],
         end_headings=[
             r"BRIEF\s+DESCRIPTION(?:\s+OF\s+DRAWINGS?)?",
-            r"DETAILED\s+DESCRIPTION(?:\s+OF\s+THE\s+INVENTION|\s+OF\s+INVENTION)?",
+            r"DETAILED\s+DESCRIPTION\b",
             r"CLAIMS?",
+            r"ABSTRACT",
+            r"WE\s+CLAIM",
+            r"WHAT\s+IS\s+CLAIMED",
+            r"DATED\s+THIS\b",
+            r"SIGNATURE\b",
+            r"PATENT\s+AGENT\b",
         ],
     )
     return _format_spec_block_for_ws(block)
@@ -698,14 +756,102 @@ def _inject_reply_by_drafter_tag(chunk: str) -> str:
     return "\n".join(lines + ["[REPLY BY DRAFTER]"]).strip()
 
 
+def _looks_generic_hn_side_heading(line: str) -> bool:
+    ln = re.sub(r"\s+", " ", (line or "").strip())
+    if not ln:
+        return False
+    core = ln.rstrip(":").strip()
+    if not core or len(core) > 90:
+        return False
+    if re.search(r"\d", core):
+        return False
+    if re.search(r"[.;!?]", core):
+        return False
+    if re.match(r"^(?:The|This|That|Please|In|On|At|For|As)\b", core, re.I):
+        return False
+    words = re.findall(r"[A-Za-z][A-Za-z/&()\-]*", core)
+    if not words or len(words) > 8:
+        return False
+    title_like = sum(1 for w in words if w and w[0].isupper()) >= max(1, int(len(words) * 0.7))
+    upper_like = core == core.upper() and bool(re.search(r"[A-Z]", core))
+    return bool(title_like or upper_like)
+
+
+def _is_numbered_objection_line(line: str) -> bool:
+    return bool(re.match(r"^\s*\d+\s*[\.\)]", (line or "").strip()))
+
+
+def _is_generic_objection_heading_at(lines: List[str], idx: int, start_scan_idx: int) -> bool:
+    if idx < start_scan_idx:
+        return False
+    ln = (lines[idx] or "").strip()
+    if not _looks_generic_hn_side_heading(ln):
+        return False
+    for j in range(idx + 1, min(len(lines), idx + 4)):
+        nxt = (lines[j] or "").strip()
+        if not nxt:
+            continue
+        if _is_hn_noise_line(nxt):
+            continue
+        return _is_numbered_objection_line(nxt)
+    return False
+
+
+def _split_hn_line_on_embedded_headings(line: str) -> List[str]:
+    ln = re.sub(r"[ \t]+", " ", (line or "")).strip()
+    if not ln:
+        return []
+
+    heading_pat = (
+        r"(?:Non[-\s]?Patentability(?:\s*u/s\s*3(?:\s*\(k\))?)?|Section\s*3(?:\s*\(k\))?|"
+        r"Clarity\s+and\s+Conciseness|Definitiveness|Definiteness|Formal\s+Requirement(?:s)?|"
+        r"Scope|Invention\s+u/s\b|Other\s+Requirement(?:s)?|Prior\s+Art|Novelty|Inventive\s+Step)"
+    )
+    parts = re.split(
+        rf"(?<=[\.;:])\s+(?="
+        rf"(?:{heading_pat})(?:\s*[:\-]|\b)|"
+        rf"[A-Z][A-Za-z/&()\-]*(?:\s+[A-Z][A-Za-z/&()\-]*){{0,6}}\s+\d+\s*[\.\)])",
+        ln,
+        flags=re.I,
+    )
+    out: List[str] = []
+    for raw in [p.strip() for p in parts if p and p.strip()]:
+        m = re.match(
+            r"^([A-Za-z][A-Za-z/&()\-]*(?:\s+[A-Za-z][A-Za-z/&()\-]*){0,6})\s+(\d+\s*[\.\)].*)$",
+            raw,
+        )
+        if m and _looks_generic_hn_side_heading(m.group(1)):
+            out.append(m.group(1).strip())
+            out.append(m.group(2).strip())
+            continue
+        out.append(raw)
+    return out
+
+
 def _extract_objection_blocks_from_hn(hn_text: str) -> Tuple[str, str]:
     """Return (objections_without_nonpat, nonpat_objection) from HN."""
     txt = (hn_text or "").strip()
     if not txt:
         return "", ""
 
-    lines = [ln.rstrip() for ln in txt.splitlines()]
-    heading_indices = [i for i, ln in enumerate(lines) if _heading_type(ln)]
+    raw_lines = [ln.rstrip() for ln in txt.splitlines()]
+    lines: List[str] = []
+    for ln in raw_lines:
+        split_parts = _split_hn_line_on_embedded_headings(ln)
+        if split_parts:
+            lines.extend(split_parts)
+        else:
+            lines.append(ln)
+
+    known_heading_indices = [i for i, ln in enumerate(lines) if _heading_type(ln)]
+    start_scan_idx = known_heading_indices[0] if known_heading_indices else 0
+    heading_indices: List[int] = []
+    for i, ln in enumerate(lines):
+        if _heading_type(ln):
+            heading_indices.append(i)
+            continue
+        if _is_generic_objection_heading_at(lines, i, start_scan_idx):
+            heading_indices.append(i)
     if not heading_indices:
         return "", ""
 
@@ -713,7 +859,7 @@ def _extract_objection_blocks_from_hn(hn_text: str) -> Tuple[str, str]:
     nonpat_chunks: List[str] = []
     for i, start in enumerate(heading_indices):
         end = heading_indices[i + 1] if i + 1 < len(heading_indices) else len(lines)
-        section_kind = _heading_type(lines[start])
+        section_kind = _heading_type(lines[start]) or "section"
         chunk_lines = []
         for ln in lines[start:end]:
             if _is_hn_noise_line(ln):
@@ -755,6 +901,7 @@ def _heading_type(line: str) -> str:
         r"Definitiveness|"
         r"Definiteness|"
         r"Formal\s+Requirement(?:s)?|"
+        r"Scope|"
         r"Invention\s+u/s\b.*|"
         r"Other\s+Requirement(?:s)?|"
         r"Prior\s+Art|"

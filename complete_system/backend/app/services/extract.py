@@ -1062,33 +1062,190 @@ def parse_claims_from_specification(spec_text: str) -> Dict[int, str]:
     idx = spec_text.lower().find("claims")
     tail = spec_text[idx:] if idx != -1 else spec_text
     claims: Dict[int, str] = {}
-    for m in re.finditer(r"(?ms)^\s*(\d{1,2})\.\s+(.*?)(?=^\s*\d{1,2}\.\s+|\Z)", tail):
+    for m in re.finditer(r"(?ms)^\s*(\d{1,3})\.\s+(.*?)(?=^\s*\d{1,3}\.\s+|\Z)", tail):
         no = int(m.group(1))
         if 1 <= no <= 50:
             claims[no] = _clean(m.group(2))
     return claims
 
 
-def parse_amended_claims(path: str) -> Dict[int, str]:
-    text = read_text_any(path)
+def _clean_claim_source_text(text: str) -> str:
+    """Remove margin line numbers and side comments from claim-source text."""
     if not text:
-        return {}
+        return ""
 
+    cleaned: List[str] = []
+    prev_blank = False
+
+    for raw in text.splitlines():
+        ln = (raw or "").rstrip()
+        if not ln.strip():
+            if cleaned and not prev_blank:
+                cleaned.append("")
+            prev_blank = True
+            continue
+
+        # Remove right-margin review notes.
+        ln = re.sub(r"\bCommented\s*\[[^\]]+\]\s*:.*$", "", ln, flags=re.I)
+        ln = re.sub(r"\bComment\s*\[[^\]]+\]\s*:.*$", "", ln, flags=re.I)
+
+        low = ln.lower().strip()
+
+        # Skip trailing signature/footer text in amended claim PDFs.
+        if re.match(r"^\s*dated\s+this\b", low):
+            break
+        if "digitally signed by" in low:
+            break
+        if re.match(r"^\s*date\s*:\s*\d{1,2}[./-]\d{1,2}[./-]\d{2,4}", low):
+            break
+        if re.search(r"\bpatent\s+agent\b", low) and not re.match(r"^\s*\d{1,3}\.\s+", ln):
+            continue
+
+        # Drop comment continuation lines, e.g. "claim 5, claim 6".
+        if re.fullmatch(r"\s*claim\s+\d+(?:\s*,\s*claim\s+\d+)*(?:\s*,\s*paragraph\s*\d+)?\s*", ln, re.I):
+            continue
+
+        # Remove left margin line numbers.
+        ln = re.sub(r"^\s*\d{1,3}\s+(?=\d{1,3}\.\s+)", "", ln)
+        ln = re.sub(r"^\s*\d{1,3}\s+(?=[A-Za-z\-\(\[])", "", ln)
+        ln = re.sub(
+            r"^\s*(\d{1,3})\s+(?=\d)",
+            lambda m: "" if (1 <= int(m.group(1)) <= 400 and int(m.group(1)) % 5 == 0) else m.group(0),
+            ln,
+        )
+
+        # Drop isolated line-number lines.
+        if re.fullmatch(r"\s*\d{1,3}\s*", ln):
+            continue
+
+        # Remove inline line-number artifacts inserted between words.
+        def _inline_repl(m: re.Match) -> str:
+            try:
+                n = int(m.group(1))
+            except Exception:
+                return m.group(0)
+            if 1 <= n <= 400 and n % 5 == 0:
+                return " "
+            return m.group(0)
+
+        ln = re.sub(r"(?<=[A-Za-z\)])\s+(\d{1,3})\s+(?=[A-Za-z\(\[])", _inline_repl, ln)
+        ln = re.sub(r"[ \t]{2,}", " ", ln).strip()
+        if not ln:
+            continue
+
+        cleaned.append(ln)
+        prev_blank = False
+
+    text_out = "\n".join(cleaned).strip()
+    text_out = re.sub(r"\n{3,}", "\n\n", text_out)
+    return text_out
+
+
+def _parse_numbered_claims_regex(text: str) -> Dict[int, str]:
     claims: Dict[int, str] = {}
-    numbered = list(re.finditer(r"(?ms)^\s*(\d{1,2})\.\s+(.*?)(?=^\s*\d{1,2}\.\s+|\Z)", text))
-    for m in numbered:
+    for m in re.finditer(r"(?ms)^\s*(\d{1,3})\.\s+(.*?)(?=^\s*\d{1,3}\.\s+|\Z)", text):
         no = int(m.group(1))
         if 1 <= no <= 200:
             claims[no] = _clean(m.group(2))
+    return claims
 
-    if 1 not in claims:
-        m = re.search(
-            r"Claim\s*1\s+has\s+been\s+amended\s+to\s+recite\s*:\s*(.*?)(?=\n\s*TECHNICAL\s+ADVANCEMENT\s*:|\Z)",
-            text,
-            re.I | re.S,
-        )
+
+def _parse_numbered_claims_sequential(text: str) -> Dict[int, str]:
+    """Parse claims by enforcing 1..N sequence to avoid splits from margin artifacts."""
+    claims: Dict[int, str] = {}
+    current_no = 0
+    current_lines: List[str] = []
+    expected_no = 1
+
+    for raw in text.splitlines():
+        ln = (raw or "").strip()
+        if not ln:
+            if current_no:
+                current_lines.append("")
+            continue
+
+        m = re.match(r"^(\d{1,3})\.\s+(.*)$", ln)
         if m:
-            claims[1] = _clean(m.group(1))
+            no = int(m.group(1))
+            if no == expected_no and 1 <= no <= 200:
+                if current_no:
+                    claims[current_no] = _clean(" ".join(part for part in current_lines if part is not None))
+                current_no = no
+                current_lines = [m.group(2)]
+                expected_no = no + 1
+                continue
+
+        if current_no:
+            current_lines.append(ln)
+
+    if current_no:
+        claims[current_no] = _clean(" ".join(part for part in current_lines if part is not None))
+    return claims
+
+
+def _claims_sequential_prefix_len(claims: Dict[int, str]) -> int:
+    if not claims:
+        return 0
+    n = 0
+    while (n + 1) in claims:
+        n += 1
+    return n
+
+
+def _pick_best_claims_candidate(candidates: List[Dict[int, str]]) -> Dict[int, str]:
+    if not candidates:
+        return {}
+    return max(
+        candidates,
+        key=lambda c: (
+            len(c.get(1, "")),
+            _claims_sequential_prefix_len(c),
+            len(c),
+        ),
+    )
+
+
+def parse_amended_claims(path: str) -> Dict[int, str]:
+    ext = Path(path).suffix.lower()
+    source_texts: List[str] = []
+    if ext == ".pdf":
+        t_layout = read_pdf_text_preserve_layout(path)
+        t_plain = read_pdf_text(path)
+        for t in [t_layout, t_plain]:
+            if t and t.strip() and t not in source_texts:
+                source_texts.append(t)
+    else:
+        t_any = read_text_any(path)
+        if t_any and t_any.strip():
+            source_texts.append(t_any)
+
+    if not source_texts:
+        return {}
+
+    cleaned_sources = [t for t in (_clean_claim_source_text(s) for s in source_texts) if t]
+    if not cleaned_sources:
+        return {}
+
+    candidates: List[Dict[int, str]] = []
+    for txt in cleaned_sources:
+        seq_claims = _parse_numbered_claims_sequential(txt)
+        if seq_claims:
+            candidates.append(seq_claims)
+        regex_claims = _parse_numbered_claims_regex(txt)
+        if regex_claims:
+            candidates.append(regex_claims)
+
+    claims = _pick_best_claims_candidate(candidates)
+    if 1 not in claims:
+        for txt in cleaned_sources:
+            m = re.search(
+                r"Claim\s*1\s+has\s+been\s+amended\s+to\s+recite\s*:\s*(.*?)(?=\n\s*TECHNICAL\s+ADVANCEMENT\s*:|\Z)",
+                txt,
+                re.I | re.S,
+            )
+            if m:
+                claims[1] = _clean(m.group(1))
+                break
 
     return claims
 

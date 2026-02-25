@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from docx import Document
 from docx.shared import Inches, RGBColor
@@ -25,6 +25,55 @@ def _iter_paragraphs_in_doc(doc: Document):
             for cell in row.cells:
                 for p in cell.paragraphs:
                     yield p
+
+
+def _replace_block_placeholder_with_paragraphs(doc: Document, placeholder: str, value: str) -> None:
+    """Replace a placeholder paragraph with multiple paragraphs split by blank lines."""
+    blocks: List[str] = [b.strip() for b in re.split(r"\n{2,}", value or "") if b and b.strip()]
+    for p in list(_iter_paragraphs_in_doc(doc)):
+        full = p.text or ""
+        if placeholder not in full:
+            continue
+
+        if not blocks:
+            p.text = full.replace(placeholder, "").strip()
+            return
+
+        from docx.oxml import OxmlElement
+
+        style = p.style
+        align = p.alignment
+        before, after = full.split(placeholder, 1)
+
+        first_text = (before or "").strip()
+        if first_text:
+            first_text = f"{first_text}\n{blocks[0]}"
+        else:
+            first_text = blocks[0]
+
+        p.text = first_text
+        p.style = style
+        p.alignment = align
+
+        anchor = p
+        for block in blocks[1:]:
+            el = OxmlElement("w:p")
+            anchor._p.addnext(el)
+            np = Paragraph(el, anchor._parent)
+            np.style = style
+            np.alignment = align
+            np.text = block
+            anchor = np
+
+        tail = (after or "").strip()
+        if tail:
+            el = OxmlElement("w:p")
+            anchor._p.addnext(el)
+            np = Paragraph(el, anchor._parent)
+            np.style = style
+            np.alignment = align
+            np.text = tail
+        return
 
 
 def _insert_table_after(paragraph: Paragraph, rows: int, cols: int) -> Table:
@@ -305,6 +354,11 @@ def replace_placeholders(doc_path: str, out_path: str, mapping: Dict[str, str]) 
         analysis_text=mapping.get("__PRIOR_ARTS_ABSTRACTS_AND_DIFF__", ""),
         diagram_images=mapping.get("__PRIOR_ART_DIAGRAM_IMAGES__", []),
         analysis_sequence=mapping.get("__PRIOR_ART_SEQUENCE__", []),
+    )
+    _replace_block_placeholder_with_paragraphs(
+        doc,
+        placeholder="{{FORMAL_OBJECTIONS_REPLY}}",
+        value=mapping.get("{{FORMAL_OBJECTIONS_REPLY}}", ""),
     )
 
     for p in _iter_paragraphs_in_doc(doc):
