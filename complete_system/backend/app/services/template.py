@@ -346,7 +346,7 @@ def replace_placeholders(doc_path: str, out_path: str, mapping: Dict[str, str]) 
     # Use compact 'preamble + features' for the table (preferred), falling back to full Claim 1.
     ensure_feature_table(
         doc,
-        claim1_text=mapping.get("{{CLAIM1_FEATURES}}", "") or mapping.get("{{AMENDED_CLAIM_1}}", ""),
+        claim1_text=mapping.get("{{AMENDED_CLAIM_1}}", "") or mapping.get("{{CLAIM1_FEATURES}}", ""),
         d1d2_text=mapping.get("{{D1D2_DISCLOSURE}}", ""),
     )
     insert_prior_art_analysis_before_feature_table(

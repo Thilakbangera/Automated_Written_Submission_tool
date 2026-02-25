@@ -954,7 +954,7 @@ def _build_prior_art_analysis_sequence(prior_arts: List[Dict[str, str]], claim1_
         if diagram_path:
             sequence.append({"kind": "image", "path": diagram_path})
 
-    claim_basis = _normalize_ws_text(claim1_features)[:1400]
+    claim_basis = _normalize_ws_text(claim1_features)
     focus_bits: List[str] = []
     for pa in prior_arts:
         abstract_short = _sentence_safe_excerpt(pa.get("abstract", ""), max_chars=260, max_chars_hard=440)
@@ -1058,7 +1058,7 @@ def generate_written_submission(
 
     claim1_text = claims.get(1, "")
     claim1_features = _build_claim1_features(claim1_text)
-    prior_art_analysis_sequence = _build_prior_art_analysis_sequence(prior_arts, claim1_features or claim1_text, dx_range)
+    prior_art_analysis_sequence = _build_prior_art_analysis_sequence(prior_arts, claim1_text, dx_range)
 
     technical_adv = extract_technical_advancement_from_spec(spec_text) or ""
     tech_problem = _extract_tech_problem(spec_text) or ""
@@ -1118,7 +1118,7 @@ def generate_written_submission(
         "{{AMENDED_CLAIM_9}}": claims.get(9, ""),
         "{{AMENDED_CLAIM_10}}": claims.get(10, ""),
         "{{EXTRA_CLAIMS_BLOCK}}": extra_claims_block.strip(),
-        "{{CLAIM1_FEATURES}}": claim1_features,
+        "{{CLAIM1_FEATURES}}": claim1_text,
         "{{D1D2_DISCLOSURE}}": d1d2_disclosure,
         "{{TECHNICAL_ADVANCEMENT}}": technical_adv,
         "{{REPLY_3K}}": reply_3k,
