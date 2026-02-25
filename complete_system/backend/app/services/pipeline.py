@@ -171,6 +171,12 @@ def _strip_spec_paragraph_markers(text: str) -> str:
     return t.strip()
 
 
+_SPEC_PARA_MARK_RE = re.compile(
+    r"(?:\[\s*\d{3,6}\s*\]|\uf05b\s*[\uf030-\uf039]{3,6}\s*\uf05d)",
+    re.I,
+)
+
+
 def _is_spec_noise_line(line: str) -> bool:
     ln = re.sub(r"\s+", " ", (line or "")).strip()
     if not ln:
@@ -286,11 +292,21 @@ def _extract_spec_section_block(spec_text: str, start_headings: List[str], end_h
 
 
 def _format_spec_block_for_ws(block: str) -> str:
-    txt = _strip_spec_paragraph_markers(_strip_line_number_artifacts(block or ""))
+    txt = _strip_line_number_artifacts(block or "")
     if not txt:
         return ""
 
-    lines = [re.sub(r"\s+", " ", ln).strip() for ln in txt.splitlines()]
+    lines = []
+    for raw in txt.splitlines():
+        ln = re.sub(r"\s+", " ", raw).strip()
+        if not ln:
+            lines.append("")
+            continue
+        # If marker appears inline, split so each marker starts a new logical line.
+        ln = re.sub(_SPEC_PARA_MARK_RE, lambda m: f"\n{m.group(0)} ", ln)
+        for part in ln.splitlines():
+            lines.append(part.strip())
+
     paras: List[str] = []
     cur = ""
 
@@ -306,13 +322,19 @@ def _format_spec_block_for_ws(block: str) -> str:
             cur = ""
 
     for ln in lines:
-        ln = _strip_spec_paragraph_markers(ln)
         if not ln:
             flush()
             continue
-        if re.match(r"^\[\d{4}\]", ln):
+
+        marker_match = _SPEC_PARA_MARK_RE.match(ln)
+        if marker_match:
             flush()
-            cur = ln
+            ln = ln[marker_match.end() :].strip()
+            if not ln:
+                continue
+
+        ln = _strip_spec_paragraph_markers(ln)
+        if not ln:
             continue
         if cur:
             if cur.endswith("-"):
@@ -406,6 +428,24 @@ _TECH_QUANT_RE = re.compile(
 )
 
 
+# Extended quantitative detector for CS technical-effect extraction.
+_TECH_QUANT_RE = re.compile(
+    r"("
+    r"\b\d+(?:\.\d+)?\s*%|"
+    r"\b\d+(?:\.\d+)?\s*(?:ms|msec|millisecond(?:s)?|s|sec|second(?:s)?|minute(?:s)?|min|hr|hour(?:s)?)\b|"
+    r"\b\d+(?:\.\d+)?\s*(?:hz|khz|mhz|ghz)\b|"
+    r"\b\d+(?:\.\d+)?\s*(?:kb|mb|gb|tb|byte(?:s)?|bit(?:s)?)\b|"
+    r"\b\d+(?:\.\d+)?\s*(?:w|mw|kw|v|mv|a|ma|db|dpi|fps)\b|"
+    r"\b\d+(?:\.\d+)?\s*(?:mm|millimeter(?:s)?|millimetre(?:s)?|cm|centimeter(?:s)?|centimetre(?:s)?|m|meter(?:s)?|metre(?:s)?|km|micrometer(?:s)?|micrometre(?:s)?|um|µm|nm|inch(?:es)?|ft|feet)\b|"
+    r"\b\d+(?:\.\d+)?\s*(?:kg|g|gram(?:s)?|kilogram(?:s)?)\b|"
+    r"\b\d+(?:\.\d+)?\s*(?:x|times)\b|"
+    r"\b(?:at\s+least|at\s+most|less\s+than|greater\s+than|more\s+than|no\s+more\s+than|not\s+more\s+than)\s+\d+(?:\.\d+)?\b|"
+    r"\b\d+(?:\.\d+)?(?:\s*(?:mm|millimeter(?:s)?|millimetre(?:s)?|cm|centimeter(?:s)?|centimetre(?:s)?|m|meter(?:s)?|metre(?:s)?|kg|g|gram(?:s)?|kilogram(?:s)?))?\s*(?:to|-|–|—)\s*\d+(?:\.\d+)?(?:\s*(?:mm|millimeter(?:s)?|millimetre(?:s)?|cm|centimeter(?:s)?|centimetre(?:s)?|m|meter(?:s)?|metre(?:s)?|kg|g|gram(?:s)?|kilogram(?:s)?))?\b"
+    r")",
+    re.I,
+)
+
+
 def _is_quantitative_effect_para(paragraph: str) -> bool:
     p = paragraph or ""
     return bool(_TECH_QUANT_RE.search(p) and _TECH_EFFECT_KW_RE.search(p))
@@ -413,6 +453,41 @@ def _is_quantitative_effect_para(paragraph: str) -> bool:
 
 def _is_quantitative_para(paragraph: str) -> bool:
     return bool(_TECH_QUANT_RE.search(paragraph or ""))
+
+
+def _quantitative_sentences_from_para(paragraph: str) -> List[str]:
+    txt = re.sub(r"\s+", " ", (paragraph or "")).strip()
+    if not txt:
+        return []
+    parts = re.split(r"(?<=[\.;!?])\s+(?=[A-Z\[])", txt)
+    out = []
+    for s in parts:
+        seg = s.strip()
+        if seg and _TECH_QUANT_RE.search(seg):
+            out.append(seg)
+    return out
+
+
+def _is_tech_effect_boilerplate_para(paragraph: str) -> bool:
+    low = re.sub(r"\s+", " ", (paragraph or "")).strip().lower()
+    if not low:
+        return True
+    if "for purposes of illustration and description" in low:
+        return True
+    if "not intended to be exhaustive" in low:
+        return True
+    if "many modifications and variations are possible" in low:
+        return True
+    if "without departing from the spirit or scope of the claims" in low:
+        return True
+    return False
+
+
+def _is_figure_caption_like_para(paragraph: str) -> bool:
+    txt = re.sub(r"\s+", " ", (paragraph or "")).strip()
+    if not txt:
+        return False
+    return bool(re.match(r"^\s*(?:fig(?:ure)?\.?\s*\d+)\b", txt, re.I))
 
 
 def _extract_tech_effect(spec_text: str) -> str:
@@ -430,28 +505,56 @@ def _extract_tech_effect(spec_text: str) -> str:
             r"ABSTRACT",
             r"WE\s+CLAIM",
             r"WHAT\s+IS\s+CLAIMED",
+            r"STATEMENT\s+OF\s+CLAIMS?",
         ],
     )
     formatted = _format_spec_block_for_ws(block)
     if not formatted:
         return ""
 
-    paras = _split_ws_paragraphs(formatted)
+    paras = [p for p in _split_ws_paragraphs(formatted) if p and p.strip() and not _is_tech_effect_boilerplate_para(p)]
     if not paras:
         return ""
 
-    # Strict priority: quantitative + effect wording from Detailed Description.
-    picked = [p for p in paras if _is_quantitative_effect_para(p)]
-    if not picked:
-        # Fallback still quantitative (if effect words are sparse).
-        picked = [p for p in paras if _is_quantitative_para(p)]
-    if not picked:
-        # Last fallback: effect-oriented paras from Detailed Description only.
-        picked = [p for p in paras if _TECH_EFFECT_KW_RE.search(p)]
-    if not picked:
-        picked = paras[:2]
+    quant_effect_idxs = [i for i, p in enumerate(paras) if _is_quantitative_effect_para(p)]
+    quant_idxs = [i for i, p in enumerate(paras) if _is_quantitative_para(p)]
+    if not quant_idxs:
+        return ""
 
-    return "\n\n".join(picked[:4]).strip()
+    # Prefer quantitative+effect paragraphs, then add other quantitative paragraphs.
+    seed_order = (
+        [i for i in quant_effect_idxs if not _is_figure_caption_like_para(paras[i])]
+        + [i for i in quant_idxs if i not in quant_effect_idxs and not _is_figure_caption_like_para(paras[i])]
+        + [i for i in quant_effect_idxs if _is_figure_caption_like_para(paras[i])]
+        + [i for i in quant_idxs if i not in quant_effect_idxs and _is_figure_caption_like_para(paras[i])]
+    )
+    selected: List[int] = []
+
+    def _add_idx(idx: int) -> None:
+        if 0 <= idx < len(paras) and idx not in selected:
+            selected.append(idx)
+
+    for idx in seed_order:
+        if len(selected) >= 4:
+            break
+        _add_idx(idx)
+        # Pull in immediate context paragraph if it still reads as effect language.
+        for nb in (idx - 1, idx + 1):
+            if len(selected) >= 4:
+                break
+            if 0 <= nb < len(paras) and _TECH_EFFECT_KW_RE.search(paras[nb]) and not _is_tech_effect_boilerplate_para(paras[nb]):
+                _add_idx(nb)
+
+    if not selected:
+        return ""
+
+    out_paras: List[str] = []
+    for idx in sorted(selected)[:4]:
+        para = re.sub(r"\s+", " ", paras[idx]).strip()
+        if len(para) > 900:
+            para = _sentence_safe_excerpt(para, max_chars=650, max_chars_hard=900)
+        out_paras.append(para)
+    return "\n\n".join(out_paras).strip()
 
 
 def _extract_reply_3k(hn_text: str) -> str:
