@@ -283,6 +283,15 @@ _PRIOR_ART_STOP_HEADINGS = [
     "claim",
     "claims",
     "what is claimed",
+    "keyword",
+    "keywords",
+    "introduction",
+    "summary",
+    "conclusion",
+    "references",
+    "bibliography",
+    "acknowledgement",
+    "acknowledgment",
     "field",
     "technical field",
     "background",
@@ -370,9 +379,13 @@ def _is_prior_art_metadata_line(line: str) -> bool:
     if re.fullmatch(r"[a-z]?\d{2,}[a-z0-9/\-]*", low):
         return True
     if re.search(
-        r"\b(application|publication|applicant|inventor|priority|filing|date|int\.?cl|ipc|cpc|attorney|agent)\b",
+        r"\b(publication|applicant|inventor|priority|filing|date|int\s*\.?\s*cl|u\s*\.?\s*s\s*\.?\s*c[il]|ipc|cpc|attorney|agent|pat\s*\.?\s*no)\b",
         low,
     ):
+        return True
+    if re.search(r"\b(?:related\s+u\.?\s*s\.?\s+application\s+data|continuation\s+of\s+application|application\s+no)\b", low):
+        return True
+    if re.search(r"\bus\s+\d{4}\s*/\s*\d{4,}\s*[ab]\d?\b", low):
         return True
     return False
 
@@ -382,6 +395,8 @@ def _looks_like_prior_art_heading(line: str) -> bool:
     if not x:
         return False
     if len(x) > 140:
+        return False
+    if not re.search(r"[A-Za-z\u00C0-\u024F]", x):
         return False
     low = x.lower().rstrip(":")
     if any(h in low for h in _PRIOR_ART_STOP_HEADINGS):
@@ -416,6 +431,20 @@ def _clean_prior_art_abstract_text(s: str) -> str:
     for p in paras:
         q = re.sub(r"-\s*\n\s*", "", p)
         q = re.sub(r"\s*\n\s*", " ", q)
+        q = re.sub(r"(?m)^\s*\d{1,3}\s*$", "", q)
+        q = re.sub(r"(?m)^\s*\d{1,3}\s+(?=[A-Za-z\[\(])", "", q)
+
+        def _inline_num_repl(m: re.Match) -> str:
+            try:
+                n = int(m.group(1))
+            except Exception:
+                return m.group(0)
+            # Typical PDF margin line numbers are low range and often step-wise.
+            if 1 <= n <= 400 and n % 5 == 0:
+                return " "
+            return m.group(0)
+
+        q = re.sub(r"(?<=[A-Za-z\)])\s+(\d{1,3})\s+(?=[A-Za-z\(\[])", _inline_num_repl, q)
         q = re.sub(r"\s+([,.;:])", r"\1", q)
         q = re.sub(r"\(\s+", "(", q)
         q = re.sub(r"\s+\)", ")", q)
@@ -445,6 +474,51 @@ def _is_prior_art_header_footer_noise(line: str) -> bool:
     if re.fullmatch(r"(?:date\s*[:\-]\s*)?\d{1,2}[./-]\d{1,2}[./-]\d{2,4}", low):
         return True
     if re.fullmatch(r"(?:page|pg)\s*\d+\s*(?:of|/)\s*\d+", low):
+        return True
+    if re.search(r"\b(?:u\s*\.?\s*s\s*\.?\s*c[il]\s*\.?|int\s*\.?\s*cl\s*\.?|cpc|ipc|field\s+of\s+classification\s+search)\b", low):
+        return True
+    if re.search(r"\brelated\s+u\.?\s*s\.?\s+application\s+data\b", low):
+        return True
+    if re.search(r"\bus\s+\d{4}\s*/\s*\d{4,}\s*[ab]\d?\b", low):
+        return True
+    if re.search(r"\bpat\s*\.?\s*no\s*\.?", low):
+        return True
+    if re.fullmatch(r"\(?\s*\d{2,4}\s*[./]\s*\d{2,4}\s*\)?", low):
+        return True
+    if re.fullmatch(r"\(?\s*\d+\s+\d{2,4}\.\d+\s*\)?", low):
+        return True
+    if re.fullmatch(r"[a-hy]\d{2}[a-z]\s*\d+(?:/\d+)?", low):
+        return True
+    if re.fullmatch(r"\(?\s*[a-hy]\d{2}[a-z]\s*\d+(?:/\d+)?\s*\)?", low):
+        return True
+    if re.search(r"\bsheet\s+\d+\s+of\s+\d+\b", low):
+        return True
+    if re.search(r"\(?\s*continued\s*\)?", low):
+        return True
+    return False
+
+
+def _is_prior_art_classification_noise(line: str) -> bool:
+    low = _normalize_pdf_line(line or "")
+    if not low:
+        return False
+    if re.search(r"\b(?:u\s*\.?\s*s\s*\.?\s*c[il]\s*\.?|int\s*\.?\s*cl\s*\.?|cpc|ipc|field\s+of\s+classification\s+search)\b", low):
+        return True
+    if re.search(r"\brelated\s+u\.?\s*s\.?\s+application\s+data\b", low):
+        return True
+    if re.search(r"\bus\s+\d{4}\s*/\s*\d{4,}\s*[ab]\d?\b", low):
+        return True
+    if re.search(r"\bpat\s*\.?\s*no\s*\.?", low):
+        return True
+    if re.search(r"\(?\s*continued\s*\)?", low):
+        return True
+    if re.fullmatch(r"\(?\s*\d{2,4}\s*[./]\s*\d{2,4}\s*\)?", low):
+        return True
+    if re.fullmatch(r"\(?\s*\d+\s+\d{2,4}\.\d+\s*\)?", low):
+        return True
+    if re.fullmatch(r"\(?\s*[a-hy]\d{2}[a-z]\s*\d+(?:/\d+)?\s*\)?", low):
+        return True
+    if re.search(r"\b[a-hy]\d{2}[a-z]\s*\d+(?:/\d+)?\b", low):
         return True
     return False
 
@@ -613,19 +687,17 @@ def _extract_prior_art_abstract_by_heading(lines: List[str]) -> str:
                 j += 1
                 continue
             blank_streak = 0
+            if _is_prior_art_classification_noise(ln):
+                j += 1
+                continue
             if _is_prior_art_header_footer_noise(ln):
-                if wc >= 120:
-                    break
                 j += 1
                 continue
             if _looks_like_prior_art_heading(ln) and wc >= 90:
                 break
             if _is_prior_art_metadata_line(ln):
-                if wc < 20:
-                    j += 1
-                    continue
-                if wc >= 120:
-                    break
+                j += 1
+                continue
             picked.append(ln)
             wc += len(ln.split())
             if wc >= 750:
@@ -688,11 +760,18 @@ def extract_prior_art_abstract_from_pdf(pdf_path: str) -> str:
     """Extract the most likely abstract text from a prior-art PDF."""
     lines = _read_prior_art_pdf_lines(pdf_path, max_pages=5)
     abstract = _extract_prior_art_abstract_by_heading(lines)
+
+    full_text = ""
+    if not abstract:
+        full_text = read_pdf_text(pdf_path)
+        abstract = _extract_prior_art_abstract_by_heading(full_text.splitlines())
+
     if not abstract:
         abstract = _extract_prior_art_abstract_fallback(lines)
 
     if not abstract:
-        full_text = read_pdf_text(pdf_path)
+        if not full_text:
+            full_text = read_pdf_text(pdf_path)
         abstract = _extract_prior_art_abstract_fallback(full_text.splitlines())
 
     abstract = _clean_prior_art_abstract_text(abstract)
