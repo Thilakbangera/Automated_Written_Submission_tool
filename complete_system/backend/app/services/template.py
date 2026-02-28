@@ -365,6 +365,11 @@ def replace_placeholders(doc_path: str, out_path: str, mapping: Dict[str, str]) 
         placeholder="{{TECH_EFFECT}}",
         value=mapping.get("{{TECH_EFFECT}}", ""),
     )
+    _replace_block_placeholder_with_paragraphs(
+        doc,
+        placeholder="{{AMENDED_CLAIM_n}}",
+        value=mapping.get("{{AMENDED_CLAIM_n}}", ""),
+    )
 
     for p in _iter_paragraphs_in_doc(doc):
         _replace_runs_in_paragraph(p, mapping)

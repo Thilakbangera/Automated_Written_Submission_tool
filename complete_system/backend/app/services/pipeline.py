@@ -630,6 +630,53 @@ def _build_claim1_features(claim1_text: str) -> str:
     return preamble + "\n" + "\n".join(cleaned) + "."
 
 
+def _lowercase_first_alpha(text: str) -> str:
+    for i, ch in enumerate(text):
+        if ch.isalpha():
+            return text[:i] + ch.lower() + text[i + 1 :]
+    return text
+
+
+def _claim_to_prose_sentence(claim_no: int, claim_text: str) -> str:
+    txt = _normalize_ws_text(claim_text)
+    if not txt:
+        return ""
+    txt = re.sub(r"^\s*\d+\.\s*", "", txt).strip()
+    txt = txt.rstrip(" ;:")
+
+    where_m = re.match(r"(?i)^the\s+.+?\bwherein\b\s+(.+)$", txt)
+    comp_m = re.match(r"(?i)^the\s+.+?\bcomprising\b\s+(.+)$", txt)
+
+    if where_m:
+        sentence = f"Claim {claim_no} recites that {where_m.group(1).strip()}"
+    elif comp_m:
+        sentence = f"Claim {claim_no} recites {comp_m.group(1).strip()}"
+    else:
+        sentence = f"Claim {claim_no} recites that {txt}"
+
+    sentence = re.sub(r"\s+", " ", sentence).strip()
+    if not re.search(r"[.!?]$", sentence):
+        sentence += "."
+    return sentence
+
+
+def _build_amended_claims_n_block(claims: Dict[int, str]) -> str:
+    """Build prose-style paragraph for {{AMENDED_CLAIM_n}} using claims 2..N."""
+    sentences: List[str] = []
+    for no in sorted(n for n in claims.keys() if n >= 2):
+        sentence = _claim_to_prose_sentence(no, claims.get(no, ""))
+        if sentence:
+            sentences.append(sentence)
+
+    if not sentences:
+        return ""
+
+    prose_parts = [f"Specifically, {_lowercase_first_alpha(sentences[0])}"]
+    for s in sentences[1:]:
+        prose_parts.append(f"Further, {_lowercase_first_alpha(s)}")
+    return " ".join(prose_parts).strip()
+
+
 def _dx_labels_from_prior_arts_text(prior_arts_text: str) -> List[str]:
     labs = []
     for ln in (prior_arts_text or "").splitlines():
@@ -1175,6 +1222,7 @@ def generate_written_submission(
     if not claim_nos:
         raise ValueError("No claims could be parsed from amended claims or specification")
     claims_range = f"1-{claim_nos[-1]}" if claim_nos[-1] != 1 else "1"
+    amended_claims_n_block = _build_amended_claims_n_block(claims)
 
     extra_claims_block = ""
     range_for_text = dx_range or "D1"
@@ -1221,6 +1269,7 @@ def generate_written_submission(
         "{{AMENDED_CLAIM_8}}": claims.get(8, ""),
         "{{AMENDED_CLAIM_9}}": claims.get(9, ""),
         "{{AMENDED_CLAIM_10}}": claims.get(10, ""),
+        "{{AMENDED_CLAIM_n}}": amended_claims_n_block,
         "{{EXTRA_CLAIMS_BLOCK}}": extra_claims_block.strip(),
         "{{CLAIM1_FEATURES}}": claim1_text,
         "{{D1D2_DISCLOSURE}}": d1d2_disclosure,
