@@ -17,12 +17,12 @@ router = APIRouter()
     summary="Generate",
     description=(
         "Generates a Written Submission DOCX from HN + specification + prior-art inputs. "
-        "Prior arts can be provided either as text abstracts or as D1-Dn PDFs (abstract auto-extracted)."
+        "Prior arts can be provided either as text abstracts or as D1-Dn documents (PDF/DOCX, abstract auto-extracted)."
     ),
 )
 async def generate(
     hn: UploadFile = File(..., description="Hearing Notice PDF"),
-    specification: UploadFile = File(..., description="Complete specification PDF"),
+    specification: UploadFile = File(..., description="Complete specification (PDF/DOCX)"),
     city: str = Form("Chennai", description="Patent Office City (e.g., Chennai, Mumbai, Delhi)"),
     filed_on: str = Form("", description="Filed On date (manual input from UI)"),
     prior_art_input_mode: str = Form("text", description="Prior-art mode: 'text' or 'pdf'"),
@@ -34,22 +34,27 @@ async def generate(
         None,
         description="For pdf mode: JSON array with fields label, has_diagram(optional)",
     ),
-    prior_art_pdfs: Optional[List[UploadFile]] = File(None, description="For pdf mode: prior-art PDFs in D1..Dn order"),
+    prior_art_pdfs: Optional[List[UploadFile]] = File(None, description="For pdf mode: prior-art files (PDF/DOCX) in D1..Dn order"),
     prior_art_diagrams: Optional[List[UploadFile]] = File(None, description="Optional prior-art diagram images"),
     drawings: Optional[UploadFile] = File(None, description="Drawings PDF (optional)"),
     amended_claims: Optional[UploadFile] = File(None, description="Amended claims (PDF/DOCX/TXT) (optional)"),
     tech_solution_images: Optional[List[UploadFile]] = File(None, description="Technical solution diagram screenshots (PNG/JPG)"),
 ):
     filed_on_value = (filed_on or "").strip()
-    if not filed_on_value:
-        raise HTTPException(status_code=422, detail="filed_on is required.")
 
-    mode = (prior_art_input_mode or "text").strip().lower()
-    if mode not in {"text", "pdf"}:
-        raise HTTPException(status_code=422, detail="prior_art_input_mode must be either 'text' or 'pdf'.")
+    mode_raw = (prior_art_input_mode or "").strip().lower()
+    if mode_raw in {"text", "pdf"}:
+        mode = mode_raw
+    else:
+        # Backward compatibility: infer mode when client omits/uses stale values.
+        mode = "pdf" if prior_art_pdfs else "text"
 
     raw_prior_arts: List[Dict[str, Any]] = []
     raw_prior_arts_meta: List[Dict[str, Any]] = []
+
+    if mode == "text" and not prior_arts_json and prior_art_pdfs:
+        # Backward compatibility: some clients forget prior_art_input_mode but send files.
+        mode = "pdf"
 
     if mode == "text":
         if not prior_arts_json:
@@ -65,7 +70,7 @@ async def generate(
             raise HTTPException(status_code=422, detail="Each prior-art entry in prior_arts_json must be an object.")
     else:
         if not prior_art_pdfs:
-            raise HTTPException(status_code=422, detail="At least one prior-art PDF (D1-Dn) is required in pdf mode.")
+            raise HTTPException(status_code=422, detail="At least one prior-art document (D1-Dn) is required in pdf mode.")
         if prior_arts_meta_json:
             try:
                 parsed_meta = json.loads(prior_arts_meta_json)
@@ -77,16 +82,21 @@ async def generate(
             if len(raw_prior_arts_meta) != len(parsed_meta):
                 raise HTTPException(status_code=422, detail="Each prior-art meta entry must be an object.")
             if raw_prior_arts_meta and len(raw_prior_arts_meta) != len(prior_art_pdfs):
-                raise HTTPException(
-                    status_code=422,
-                    detail="prior_arts_meta_json length must match prior_art_pdfs length.",
-                )
+                # Backward compatibility: normalize meta length to number of uploaded files.
+                if len(raw_prior_arts_meta) < len(prior_art_pdfs):
+                    raw_prior_arts_meta.extend({} for _ in range(len(prior_art_pdfs) - len(raw_prior_arts_meta)))
+                else:
+                    raw_prior_arts_meta = raw_prior_arts_meta[: len(prior_art_pdfs)]
 
     prior_arts_entries: List[Dict[str, Any]] = []
 
     with tempfile.TemporaryDirectory() as td:
         hn_path = os.path.join(td, "hn.pdf")
-        spec_path = os.path.join(td, "spec.pdf")
+        spec_filename = specification.filename or "spec.pdf"
+        spec_ext = Path(spec_filename).suffix.lower()
+        if spec_ext not in {".pdf", ".docx"}:
+            raise HTTPException(status_code=422, detail="Specification must be a PDF or DOCX file.")
+        spec_path = os.path.join(td, f"spec{spec_ext}")
 
         with open(hn_path, "wb") as f:
             f.write(await hn.read())
@@ -96,6 +106,9 @@ async def generate(
         if mode == "text":
             for idx, item in enumerate(raw_prior_arts, start=1):
                 abstract = str(item.get("abstract", "")).strip()
+                if not abstract:
+                    # Backward compatibility: older payloads used summary field.
+                    abstract = str(item.get("summary", "")).strip()
                 if not abstract:
                     raise HTTPException(
                         status_code=422,
@@ -115,9 +128,9 @@ async def generate(
             for idx, pa_pdf in enumerate(prior_art_pdfs or [], start=1):
                 filename = pa_pdf.filename or f"d{idx}.pdf"
                 ext = Path(filename).suffix.lower()
-                if ext != ".pdf":
-                    raise HTTPException(status_code=422, detail=f"Prior-art file #{idx} must be a PDF.")
-                out_pdf = os.path.join(td, f"prior_art_{idx}.pdf")
+                if ext not in {".pdf", ".docx"}:
+                    raise HTTPException(status_code=422, detail=f"Prior-art file #{idx} must be a PDF or DOCX.")
+                out_pdf = os.path.join(td, f"prior_art_{idx}{ext}")
                 with open(out_pdf, "wb") as f:
                     f.write(await pa_pdf.read())
 

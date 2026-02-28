@@ -7,13 +7,14 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from .extract import (
-    extract_prior_art_abstract_from_pdf,
+    extract_prior_art_abstract,
     extract_figure_descriptions_from_spec,
     extract_technical_advancement_from_spec,
     parse_amended_claims,
     parse_case_meta_from_fer_or_hn,
     parse_claims_from_specification,
     read_pdf_text,
+    read_text_any,
 )
 from .template import replace_placeholders
 
@@ -732,12 +733,12 @@ def _normalize_prior_art_entries(prior_arts_entries: Optional[List[Dict[str, Any
         diagram_image_path = _normalize_ws_text(str(raw.get("diagram_image_path", "")))
         if not abstract and prior_art_pdf_path:
             try:
-                abstract = _normalize_ws_text(extract_prior_art_abstract_from_pdf(prior_art_pdf_path))
+                abstract = _normalize_ws_text(extract_prior_art_abstract(prior_art_pdf_path))
             except Exception:
                 abstract = ""
         if not abstract:
             if prior_art_pdf_path:
-                raise ValueError(f"Unable to extract abstract from prior-art PDF for {raw_label or f'D{num}'}.")
+                raise ValueError(f"Unable to extract abstract from prior-art document for {raw_label or f'D{num}'}.")
             continue
 
         normalized.append(
@@ -1100,7 +1101,7 @@ def generate_written_submission(
     formal_objections_reply, nonpat_objection_reply = _extract_objection_blocks_from_hn(hn_text)
     formal_objections_reply = formal_objections_reply or ""
 
-    spec_text = read_pdf_text(specification_path)
+    spec_text = read_text_any(specification_path)
     fig_desc_map = extract_figure_descriptions_from_spec(spec_text)
 
     prior_arts = _normalize_prior_art_entries(prior_arts_entries)

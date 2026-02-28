@@ -229,20 +229,73 @@ def read_pdf_text_preserve_layout(path: str) -> str:
     return "\n".join([p for p in cleaned_pages if p.strip()])
 
 
+def _iter_docx_table_paragraphs(table) -> List[object]:
+    out: List[object] = []
+    for row in table.rows:
+        for cell in row.cells:
+            for p in cell.paragraphs:
+                out.append(p)
+            for nested in cell.tables:
+                out.extend(_iter_docx_table_paragraphs(nested))
+    return out
+
+
+def _iter_docx_paragraphs(doc) -> List[object]:
+    out: List[object] = list(doc.paragraphs)
+    for table in doc.tables:
+        out.extend(_iter_docx_table_paragraphs(table))
+    return out
+
+
+def _is_numbered_list_paragraph(paragraph) -> bool:
+    try:
+        ppr = paragraph._p.pPr  # type: ignore[attr-defined]
+        if ppr is not None and ppr.numPr is not None:
+            return True
+    except Exception:
+        pass
+
+    style_name = ""
+    try:
+        style_name = (paragraph.style.name or "").strip().lower()
+    except Exception:
+        style_name = ""
+
+    if "list" in style_name and ("number" in style_name or "num" in style_name):
+        return True
+    if "numbered" in style_name:
+        return True
+    return False
+
+
 def read_docx_text(path: str) -> str:
     if Document is None:
         return ""
     doc = Document(path)
     parts: List[str] = []
-    for p in doc.paragraphs:
-        if p.text:
-            parts.append(p.text)
-    for t in doc.tables:
-        for row in t.rows:
-            for cell in row.cells:
-                for p in cell.paragraphs:
-                    if p.text:
-                        parts.append(p.text)
+    auto_num = 1
+
+    for p in _iter_docx_paragraphs(doc):
+        txt = (p.text or "").strip()
+        if not txt:
+            continue
+
+        # Preserve explicit numbering if already present.
+        if re.match(r"^\s*\d+[\.\):]\s*", txt):
+            parts.append(txt)
+            m_no = re.match(r"^\s*(\d+)[\.\):]\s*", txt)
+            if m_no:
+                auto_num = max(auto_num, int(m_no.group(1)) + 1)
+            continue
+
+        # Recover invisible Word auto-numbering metadata into plain text.
+        if _is_numbered_list_paragraph(p):
+            parts.append(f"{auto_num}. {txt}")
+            auto_num += 1
+            continue
+
+        parts.append(txt)
+
     return "\n".join(parts)
 
 
@@ -780,6 +833,50 @@ def extract_prior_art_abstract_from_pdf(pdf_path: str) -> str:
     return _trim_abstract_without_mid_sentence_cut(abstract)
 
 
+def _extract_prior_art_abstract_from_text(full_text: str) -> str:
+    text = (full_text or "").replace("\r", "\n")
+    raw_lines = text.splitlines()
+
+    lines: List[str] = []
+    prev_blank = False
+    for raw in raw_lines:
+        ln = re.sub(r"\s+", " ", (raw or "").strip())
+        if not ln:
+            if lines and not prev_blank:
+                lines.append("")
+            prev_blank = True
+            continue
+        if _is_prior_art_header_footer_noise(ln):
+            continue
+        if _is_prior_art_classification_noise(ln):
+            continue
+        if "(cid:" in ln.lower():
+            continue
+        lines.append(ln)
+        prev_blank = False
+
+    abstract = _extract_prior_art_abstract_by_heading(lines)
+    if not abstract:
+        abstract = _extract_prior_art_abstract_fallback(lines)
+    if not abstract:
+        abstract = _extract_prior_art_abstract_by_heading(text.splitlines())
+    if not abstract:
+        abstract = _extract_prior_art_abstract_fallback(text.splitlines())
+
+    abstract = _clean_prior_art_abstract_text(abstract)
+    if abstract and _looks_non_english(abstract):
+        abstract = _clean_prior_art_abstract_text(_translate_text_to_english(abstract))
+    return _trim_abstract_without_mid_sentence_cut(abstract)
+
+
+def extract_prior_art_abstract(path: str) -> str:
+    """Extract prior-art abstract from PDF/DOCX/TXT-like documents."""
+    ext = Path(path).suffix.lower()
+    if ext == ".pdf":
+        return extract_prior_art_abstract_from_pdf(path)
+    return _extract_prior_art_abstract_from_text(read_text_any(path))
+
+
 def _find_date(patterns: List[str], text: str) -> str:
     for pat in patterns:
         m = re.search(pat, text, re.I)
@@ -1138,14 +1235,40 @@ def build_prior_arts_list(meta: CaseMeta) -> str:
 
 
 def parse_claims_from_specification(spec_text: str) -> Dict[int, str]:
-    idx = spec_text.lower().find("claims")
-    tail = spec_text[idx:] if idx != -1 else spec_text
-    claims: Dict[int, str] = {}
-    for m in re.finditer(r"(?ms)^\s*(\d{1,3})\.\s+(.*?)(?=^\s*\d{1,3}\.\s+|\Z)", tail):
-        no = int(m.group(1))
-        if 1 <= no <= 50:
-            claims[no] = _clean(m.group(2))
-    return claims
+    text = spec_text or ""
+    if not text.strip():
+        return {}
+
+    starts: List[int] = []
+    for pat in [
+        r"(?im)^\s*WE\s+CLAIM\b",
+        r"(?im)^\s*CLAIMS?\s*:?\s*$",
+        r"(?im)^\s*WHAT\s+IS\s+CLAIMED\b",
+    ]:
+        m = re.search(pat, text)
+        if m:
+            starts.append(m.start())
+
+    if starts:
+        tail = text[min(starts):]
+    else:
+        idx = text.lower().find("claims")
+        tail = text[idx:] if idx != -1 else text
+
+    cleaned_tail = _clean_claim_source_text(tail)
+    if not cleaned_tail:
+        return {}
+
+    candidates: List[Dict[int, str]] = []
+    seq_claims = _parse_numbered_claims_sequential(cleaned_tail)
+    if seq_claims:
+        candidates.append(seq_claims)
+    regex_claims = _parse_numbered_claims_regex(cleaned_tail)
+    if regex_claims:
+        candidates.append(regex_claims)
+
+    best = _pick_best_claims_candidate(candidates)
+    return {k: v for k, v in best.items() if 1 <= k <= 200}
 
 
 def _clean_claim_source_text(text: str) -> str:
@@ -1209,6 +1332,7 @@ def _clean_claim_source_text(text: str) -> str:
 
         ln = re.sub(r"(?<=[A-Za-z\)])\s+(\d{1,3})\s+(?=[A-Za-z\(\[])", _inline_repl, ln)
         ln = re.sub(r"[ \t]{2,}", " ", ln).strip()
+        ln = _canonicalize_claim_marker_line(ln)
         if not ln:
             continue
 
@@ -1220,9 +1344,32 @@ def _clean_claim_source_text(text: str) -> str:
     return text_out
 
 
+def _canonicalize_claim_marker_line(line: str) -> str:
+    ln = (line or "").strip()
+    if not ln:
+        return ""
+
+    patterns = [
+        r"^\s*\[?\s*AMENDED[_\s-]*CLAIM[_\s-]*(\d{1,3})\s*\]?\s*[:\-]?\s*(.*)$",
+        r"^\s*CLAIM\s*(\d{1,3})\s*[:\-\)]?\s*(.*)$",
+        r"^\s*\((\d{1,3})\)\s*(.*)$",
+        r"^\s*(\d{1,3})\)\s*(.*)$",
+    ]
+
+    for pat in patterns:
+        m = re.match(pat, ln, re.I)
+        if not m:
+            continue
+        no = int(m.group(1))
+        rest = (m.group(2) or "").strip()
+        if 1 <= no <= 200:
+            return f"{no}. {rest}".strip()
+    return ln
+
+
 def _parse_numbered_claims_regex(text: str) -> Dict[int, str]:
     claims: Dict[int, str] = {}
-    for m in re.finditer(r"(?ms)^\s*(\d{1,3})\.\s+(.*?)(?=^\s*\d{1,3}\.\s+|\Z)", text):
+    for m in re.finditer(r"(?ms)^\s*(\d{1,3})\.\s*(.*?)(?=^\s*\d{1,3}\.\s*|\Z)", text):
         no = int(m.group(1))
         if 1 <= no <= 200:
             claims[no] = _clean(m.group(2))
@@ -1317,13 +1464,18 @@ def parse_amended_claims(path: str) -> Dict[int, str]:
     claims = _pick_best_claims_candidate(candidates)
     if 1 not in claims:
         for txt in cleaned_sources:
-            m = re.search(
+            for pat in [
                 r"Claim\s*1\s+has\s+been\s+amended\s+to\s+recite\s*:\s*(.*?)(?=\n\s*TECHNICAL\s+ADVANCEMENT\s*:|\Z)",
-                txt,
-                re.I | re.S,
-            )
-            if m:
-                claims[1] = _clean(m.group(1))
+                r"Claim\s*1\s+has\s+been\s+amended\s*[:\-]\s*(.*?)(?=\n\s*(?:Claim\s*2|2[\.\)]|Regarding\s+Claim\s*2)\b|\Z)",
+                r"Regarding\s+Claim\s*1\s*:\s*(.*?)(?=\n\s*Regarding\s+Claim\s*2\s*:|\Z)",
+            ]:
+                m = re.search(pat, txt, re.I | re.S)
+                if m:
+                    c1 = _clean(m.group(1))
+                    if c1:
+                        claims[1] = c1
+                        break
+            if 1 in claims:
                 break
 
     return claims

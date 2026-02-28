@@ -672,8 +672,8 @@ with colA:
     if hn:
         _render_file_preview(hn)
 
-    spec = st.file_uploader("📑 Complete Specification", type=["pdf"],
-                            help="Upload the complete specification PDF", key=f"spec_{ck}")
+    spec = st.file_uploader("📑 Complete Specification", type=["pdf", "docx"],
+                            help="Upload the complete specification (PDF or DOCX)", key=f"spec_{ck}")
     if spec:
         _render_file_preview(spec)
 
@@ -694,12 +694,12 @@ with colA:
     st.markdown("#### Prior Arts (D1-Dn)")
     prior_art_input_mode_label = st.selectbox(
         "Prior Art Input Mode",
-        options=["From Prior-Art PDF (Auto Abstract Extraction)", "Manual Abstract Text"],
+        options=["From Prior-Art Document (Auto Abstract Extraction)", "Manual Abstract Text"],
         index=0,
         key=f"prior_art_mode_{ck}",
         help="Choose how prior arts are provided.",
     )
-    prior_art_input_mode = "pdf" if prior_art_input_mode_label.startswith("From Prior-Art PDF") else "text"
+    prior_art_input_mode = "pdf" if "Auto Abstract Extraction" in prior_art_input_mode_label else "text"
     if st.button("+ Add Prior Art", use_container_width=True, key=f"add_prior_art_{ck}"):
         st.session_state.prior_art_count += 1
         st.rerun()
@@ -715,10 +715,10 @@ with colA:
         prior_pdf = None
         if prior_art_input_mode == "pdf":
             prior_pdf = st.file_uploader(
-                f"{label} Prior Art PDF",
-                type=["pdf"],
+                f"{label} Prior Art Document (PDF/DOCX)",
+                type=["pdf", "docx"],
                 key=f"prior_art_{idx}_pdf_{ck}",
-                help=f"Upload prior-art PDF for {label}",
+                help=f"Upload prior-art document (PDF/DOCX) for {label}",
             )
             if prior_pdf:
                 _render_file_preview(prior_pdf)
@@ -768,7 +768,11 @@ with colA:
 
             if spec:
                 st.markdown("##### 📑 Complete Specification")
-                _preview_pdf_inline(spec, height=500)
+                spec_ext = spec.name.lower()
+                if spec_ext.endswith(".pdf"):
+                    _preview_pdf_inline(spec, height=500)
+                else:
+                    _preview_docx(spec)
 
             if amended:
                 ext_lower = amended.name.lower()
