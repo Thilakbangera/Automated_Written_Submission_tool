@@ -573,6 +573,24 @@ def _extract_reply_3k(hn_text: str) -> str:
     return ""
 
 
+_NONPAT_RE = re.compile(r"\bnon[-\s]?patentability\b", re.I)
+_SECTION_3K_VARIANT_RE = re.compile(
+    r"(?:"
+    r"\bsection\s*\(?\s*3\s*\)?\s*\(?\s*k\s*\)?\b|"
+    r"\bclause\s*\(?\s*k\s*\)?\s*of\s*section\s*\(?\s*3\s*\)?\b|"
+    r"\b3\s*\(\s*k\s*\)"
+    r")",
+    re.I,
+)
+
+
+def _detect_nonpat_and_3k_presence(source_text: str, nonpat_block: str) -> Tuple[bool, bool]:
+    corpus = "\n".join([source_text or "", nonpat_block or ""])
+    has_nonpat = bool(_NONPAT_RE.search(corpus))
+    has_3k_reference = bool(_SECTION_3K_VARIANT_RE.search(corpus))
+    return has_nonpat, has_3k_reference
+
+
 def _agent_from_drawings(drawings_path: Optional[str]) -> str:
     if not drawings_path:
         return ""
@@ -1216,6 +1234,10 @@ def generate_written_submission(
     tech_solution = _extract_tech_solution(spec_text) or ""
     tech_effect = _extract_tech_effect(spec_text) or ""
     reply_3k = _first_nonempty(nonpat_objection_reply, _extract_reply_3k(hn_text))
+    has_nonpat_objection, has_3k_reference = _detect_nonpat_and_3k_presence(hn_text, nonpat_objection_reply)
+    # Static 3(k) text is allowed only when BOTH non-patentability and 3(k) are present.
+    # In every other case, switch to the dynamic technical-solution block.
+    use_dynamic_non_3k_block = not (has_nonpat_objection and has_3k_reference)
 
     claim_nos = sorted([n for n in claims.keys() if n >= 1])
     claim_max = claim_nos[-1] if claim_nos else 0
@@ -1284,6 +1306,7 @@ def generate_written_submission(
     mapping["__CLAIM_MAX__"] = claim_max
     mapping["__FIG_DESC_MAP__"] = fig_desc_map
     mapping["__PRIOR_ART_SEQUENCE__"] = prior_art_analysis_sequence
+    mapping["__USE_DYNAMIC_NONPAT_3K_BLOCK__"] = use_dynamic_non_3k_block
 
     out_dir = os.path.join(tempfile.gettempdir(), "ws_tool_outputs")
     os.makedirs(out_dir, exist_ok=True)

@@ -257,6 +257,60 @@ def _style_reply_by_drafter_marker(doc: Document) -> None:
                 r.font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
 
 
+def _rewrite_nonpat_3k_section_to_dynamic_block(doc: Document) -> None:
+    """For non-3(k) non-patentability cases, keep only dynamic placeholders."""
+    paras = list(doc.paragraphs)
+    if not paras:
+        return
+
+    tech_solution_heading_idx = -1
+    end_idx = len(paras)
+
+    for i, p in enumerate(paras):
+        txt = re.sub(r"\s+", " ", (p.text or "").strip())
+        if tech_solution_heading_idx < 0 and re.match(
+            r"^TECHNICAL\s+SOLUTION\s+SOLVED\s+BY\s+THE\s+INVENITON\s*:?\s*$",
+            txt,
+            re.I,
+        ):
+            tech_solution_heading_idx = i
+            continue
+        if tech_solution_heading_idx >= 0 and re.match(r"^The\s+Applicant\s+further\s+submits\b", txt, re.I):
+            end_idx = i
+            break
+
+    if tech_solution_heading_idx < 0:
+        return
+
+    heading_para = paras[tech_solution_heading_idx]
+
+    # Remove the current static/dynamic mixed block under the heading.
+    for p in paras[tech_solution_heading_idx + 1 : end_idx]:
+        parent = p._element.getparent()
+        if parent is not None:
+            parent.remove(p._element)
+
+    from docx.oxml import OxmlElement
+    from docx.text.paragraph import Paragraph
+
+    lines = [
+        "{{TECH_SOLUTION}}",
+        "Technical Effect:",
+        "{{TECH_EFFECT}}",
+        "{{CLAIM1_FEATURES}}",
+        "{{AMENDED_CLAIM_n}}",
+        "{{TECH_SOLUTION_IMAGES}}",
+    ]
+
+    anchor = heading_para
+    for line in lines:
+        new_p = OxmlElement("w:p")
+        anchor._p.addnext(new_p)
+        np = Paragraph(new_p, anchor._parent)
+        np.text = line
+        anchor = np
+
+
 def _is_heading_or_side_heading_line(line: str) -> bool:
     t = re.sub(r"\s+", " ", (line or "")).strip()
     if not t:
@@ -341,6 +395,9 @@ def _style_headings_and_side_headings(doc: Document) -> None:
 
 def replace_placeholders(doc_path: str, out_path: str, mapping: Dict[str, str]) -> None:
     doc = Document(doc_path)
+
+    if bool(mapping.get("__USE_DYNAMIC_NONPAT_3K_BLOCK__", False)):
+        _rewrite_nonpat_3k_section_to_dynamic_block(doc)
 
     # Ensure feature table BEFORE replacement, so anchor placeholders exist.
     # Use compact 'preamble + features' for the table (preferred), falling back to full Claim 1.
